@@ -1,0 +1,11 @@
+{
+  "name": "ciws-command",
+  "version": "0.1.0",
+  "description": "A Missile Command-style game defended with CIWS guns and interceptors.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "serve": "python3 serve.py 8011"
+  }
+}

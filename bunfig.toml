@@ -1,0 +1,4 @@
+[test]
+# Provide minimal browser globals (window, etc.) before any test file loads, so
+# the headless game logic can be constructed and exercised under `bun test`.
+preload = ["./tests/setup.js"]
