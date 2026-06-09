@@ -10,8 +10,8 @@ stays a flat 2D plane viewed nearly head-on.
 
 ## Play
 
-**Play it in your browser** — hosted free on GitHub Pages (see the repo's
-About link). To run locally:
+**[▶ Play it in your browser](https://andrewmunn.github.io/ciws-command/)** —
+hosted free on GitHub Pages (auto-deploys from `main`). To run locally:
 
 ```
 python3 serve.py 8011      # or: bun run serve
