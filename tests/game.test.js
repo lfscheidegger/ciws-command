@@ -38,7 +38,7 @@ describe('Wave flow', () => {
     g.startGame();
     g.bullets = [1, 2, 3];
     g.interceptorList = [1];
-    g.interceptorWeapon.timer = 99; // way over-long timer from a stale state
+    g.interceptorWeapon.timer = 99; // mid-reload from last wave
     g.startWave(4);
     expect(g.wave).toBe(4);
     expect(g.toSpawn).toBe(
@@ -46,7 +46,7 @@ describe('Wave flow', () => {
     );
     expect(g.bullets).toHaveLength(0);
     expect(g.interceptorList).toHaveLength(0);
-    expect(g.interceptorWeapon.timer).toBe(g.interceptorWeapon.cooldown); // fresh (unloaded) reload
+    expect(g.interceptorWeapon.timer).toBe(0); // pod comes back loaded
     expect(g.waveLeaks).toBe(0);
   });
 
@@ -74,15 +74,15 @@ describe('Wave flow', () => {
     expect(g.waveEndTimer).toBe(0);
   });
 
-  it('proceedToNextWave starts the next wave with a fresh reload running', () => {
+  it('proceedToNextWave starts the next wave with the pod loaded', () => {
     const g = newGame();
     g.startGame();
     g.endWave();
-    g.interceptorWeapon.timer = 99; // stale over-long timer
+    g.interceptorWeapon.timer = 99; // mid-reload at wave end
     g.proceedToNextWave();
     expect(g.state).toBe('playing');
     expect(g.wave).toBe(2);
-    expect(g.interceptorWeapon.timer).toBe(g.interceptorWeapon.cooldown);
+    expect(g.interceptorWeapon.timer).toBe(0); // loaded and ready
   });
 });
 
@@ -126,12 +126,18 @@ describe('Threat selection (chooseThreat)', () => {
       expect(g.chooseThreat().type).toBe('cruise'); // outranks drone once unlocked
     });
     withRandom([0.5, 0.5, 0], () => {
-      g.wave = 4; // cruise (0.5) and drone (0.5) miss, hypersonic (0) hits
+      g.wave = 4; // cruise/drone miss; bomber unlocks at 4, outranks hypersonic
+      expect(g.chooseThreat().type).toBe('bomber');
+    });
+    withRandom([0.5, 0.5, 0.5, 0], () => {
+      g.wave = 4; // cruise/drone/bomber miss (0.5s), hypersonic (0) hits
       expect(g.chooseThreat().type).toBe('hypersonic');
     });
     withRandom(0, () => {
       g.wave = CONFIG.missile.nuke.fromWave;
       g.nukesSpawned = 0;
+      g.waveSpawnTotal = 20;
+      g.toSpawn = 10; // mid-wave: not the first or last spawn
       expect(g.chooseThreat().type).toBe('nuke'); // top of the precedence order
     });
   });
@@ -180,8 +186,8 @@ describe('Spawning', () => {
   it('forces a hypersonic with low rolls at wave 4', () => {
     const g = newGame();
     g.startGame();
-    withRandom([0.5, 0.5, 0], () => {
-      g.wave = 4; // cruise and drone miss, hypersonic hits
+    withRandom([0.5, 0.5, 0.5, 0], () => {
+      g.wave = 4; // cruise/drone/bomber miss, hypersonic hits
       g.missiles = [];
       g.spawnMissile();
     });
@@ -796,7 +802,7 @@ describe('New threats', () => {
     }
   });
 
-  it('a nuke targets a city and wipes that whole side on impact', () => {
+  it('air-bursts above an inner city and levels the immediate neighbours', () => {
     const g = newGame();
     g.startGame();
     g.missiles = [];
@@ -806,13 +812,46 @@ describe('New threats', () => {
     expect(nuke.type).toBe('nuke');
     expect(nuke.maxHp).toBe(CONFIG.missile.hp.nuke); // armoured
 
-    // Detonate it on the left side: every left city dies, the rest survive.
-    nuke.x = g.W * 0.25;
+    // It never aims at the outermost cities while inner ones stand.
+    const innerXs = g.cities.slice(1, -1).map((c) => c.x);
+    expect(innerXs).toContain(nuke.targetX);
+
+    // Fly it in: it detonates ABOVE the ground (air burst).
+    let r = null;
+    let guard = 0;
+    while (r === null && guard++ < 6000) r = nuke.update(1 / 60, g.groundY);
+    expect(r).toBe('impact');
+    expect(nuke.y).toBeLessThan(g.groundY - CONFIG.missile.nuke.burstHeight + 2);
+
+    // Burst over city index 1: cities 0,1,2 die; the rest (and the gun,
+    // two slots away) survive. A mushroom cloud starts billowing.
+    nuke.x = g.cities[1].x;
     g.impact(nuke);
-    for (const c of g.cities) {
-      expect(c.alive).toBe(c.x >= g.W / 2);
-    }
-    expect(g.turrets[0].alive).toBe(true); // the gun is never nuked from range
+    expect(g.cities[0].alive).toBe(false);
+    expect(g.cities[1].alive).toBe(false);
+    expect(g.cities[2].alive).toBe(false);
+    expect(g.cities[3].alive).toBe(true);
+    expect(g.turrets[0].alive).toBe(true);
+    expect(g.mushrooms).toHaveLength(1);
+  });
+
+  it('kills the CIWS when it bursts over the city next door', () => {
+    const g = newGame();
+    g.startGame();
+    const cityByGun = g.cities[2]; // slot layout: c0 c1 c2 [gun] c3 c4 c5
+    g.impact({ type: 'nuke', x: cityByGun.x, y: g.groundY - 120 });
+    expect(cityByGun.alive).toBe(false);
+    expect(g.turrets[0].alive).toBe(false); // the gun was one slot away
+  });
+
+  it('targets an outermost city only when nothing inner is left', () => {
+    const g = newGame();
+    g.startGame();
+    for (const c of g.cities.slice(1, -1)) c.alive = false; // only c0/c5 stand
+    g.missiles = [];
+    g.launchNuke();
+    const outerXs = [g.cities[0].x, g.cities[g.cities.length - 1].x];
+    expect(outerXs).toContain(g.missiles[0].targetX);
   });
 
   it('a nuke shrugs off interceptor blasts, dying only to repeated hits', () => {
@@ -832,14 +871,32 @@ describe('New threats', () => {
     expect(nuke.dead).toBe(true);
   });
 
-  it('nukes are capped per wave', () => {
+  it('never rolls a nuke as the first or last spawns of a wave', () => {
     const g = newGame();
     g.startGame();
     g.wave = CONFIG.missile.nuke.fromWave;
-    g.nukesSpawned = CONFIG.missile.nuke.maxPerWave;
-    for (let i = 0; i < 200; i++) {
-      expect(g.chooseThreat().type).not.toBe('nuke');
+    g.nukesSpawned = 0;
+    g.waveSpawnTotal = 20;
+    for (const toSpawn of [20, 19, 1, 0]) {
+      g.toSpawn = toSpawn; // wave opening (nothing spawned) or closing out
+      for (let i = 0; i < 100; i++) expect(g.chooseThreat().type).not.toBe('nuke');
     }
+  });
+
+  it('caps at one nuke per wave, two from the late waves on', () => {
+    const g = newGame();
+    g.startGame();
+    g.waveSpawnTotal = 30;
+    g.toSpawn = 15; // mid-wave so the order gate passes
+
+    g.wave = CONFIG.missile.nuke.fromWave;
+    g.nukesSpawned = CONFIG.missile.nuke.maxPerWave;
+    for (let i = 0; i < 200; i++) expect(g.chooseThreat().type).not.toBe('nuke');
+
+    g.wave = CONFIG.missile.nuke.twoFromWave;
+    expect(withRandom(0, () => g.chooseThreat().type)).toBe('nuke'); // a 2nd is allowed
+    g.nukesSpawned = 2;
+    for (let i = 0; i < 200; i++) expect(g.chooseThreat().type).not.toBe('nuke');
   });
 });
 
@@ -1072,5 +1129,112 @@ describe('Laser firing arc', () => {
     for (let i = 0; i < 120; i++) g.updateLaser(1 / 60);
     expect(g.laser.target).toBeNull();
     expect(skimmer.hp).toBe(skimmer.maxHp);
+  });
+});
+
+describe('Bombers & glide bombs', () => {
+  it('crosses the sky level, drops bombs over the field, exits without leaking', () => {
+    const g = newGame();
+    g.startGame();
+    g.missiles = [];
+    g.toSpawn = 0;
+    g.spawnBomber();
+    const bomber = g.missiles[0];
+    expect(bomber.type).toBe('bomber');
+    expect(Math.abs(bomber.vy)).toBeLessThan(1e-9); // level flight
+    expect(bomber.bombsLeft).toBeGreaterThanOrEqual(CONFIG.missile.bomber.bombs[0]);
+
+    const leaks0 = g.waveLeaks;
+    let guard = 0;
+    while (!bomber.dead && guard++ < 4000) g.update(1 / 60);
+    expect(bomber.dead).toBe(true); // exited and was culled
+    expect(g.waveLeaks - leaks0).toBeLessThanOrEqual(
+      CONFIG.missile.bomber.bombs[1] // only its BOMBS may have leaked
+    );
+    expect(bomber.bombsLeft).toBe(0); // emptied the rack on the way
+  });
+
+  it('glide bombs can be shot down like any other threat', () => {
+    const g = newGame();
+    g.startGame();
+    const bomb = new EnemyMissile(700, 300, 800, g.groundY, 160, 0, 0, 'glidebomb');
+    g.missiles = [bomb];
+    g.bullets = [new Bullet(700, 300, 0)];
+    const credits0 = g.credits;
+    g.checkCollisions();
+    expect(bomb.dead).toBe(true);
+    expect(g.credits - credits0).toBe(CONFIG.economy.bounty.glidebomb);
+  });
+
+  it('the interceptor will engage bombers; the laser takes the bombs', () => {
+    const g = newGame();
+    g.startGame();
+    g.toSpawn = 0;
+    const bomber = new EnemyMissile(-40, 200, 1500, 200, 130, 0, 0, 'bomber');
+    bomber.x = bomber.cx = 400;
+    const bomb = new EnemyMissile(700, 300, 800, g.groundY, 160, 0, 0, 'glidebomb');
+    g.missiles = [bomber, bomb];
+    g.interceptorWeapon.buy();
+    g.interceptorWeapon.timer = 0;
+    g.updateInterceptorLauncher(1 / 60);
+    expect(g.interceptorList[0].target).toBe(bomber); // value 4 beats bomb's 1
+    expect(g.laser.canTarget(bomb)).toBe(true);
+  });
+});
+
+describe('Score recording', () => {
+  it('banks the run on game over and surfaces the rank', () => {
+    const g = newGame();
+    const calls = [];
+    g.scoreboard = {
+      add: (score, wave) => {
+        calls.push([score, wave]);
+        return { scores: [{ score, wave, date: 'x' }], rank: 0 };
+      },
+    };
+    g.startGame();
+    g.score = 4321;
+    g.wave = 7;
+    g.gameOver('Cities lost');
+    expect(calls).toEqual([[4321, 7]]);
+    expect(g.lastRun.rank).toBe(0);
+  });
+});
+
+describe('Bomber evasion', () => {
+  it('jinks while a homing interceptor closes, settles when clear', () => {
+    const g = newGame();
+    g.startGame();
+    g.toSpawn = 0;
+    g.missiles = [];
+    g.spawnBomber();
+    const bomber = g.missiles[0];
+    bomber.x = bomber.cx = 700; // park it mid-field
+    g.update(1 / 60);
+    expect(bomber.evading).toBe(false);
+    expect(Math.abs(bomber.vy)).toBeLessThan(1); // level cruise
+
+    g.interceptorWeapon.buy();
+    g.interceptorWeapon.timer = 0;
+    g.updateInterceptorLauncher(1 / 60);
+    const it = g.interceptorList[0];
+    expect(it.target).toBe(bomber);
+    it.x = bomber.x + 100; // inside evade range
+    it.y = bomber.y + 100;
+    let sawJink = false;
+    for (let i = 0; i < 30; i++) {
+      it.update = () => null; // freeze the threat in place
+      g.update(1 / 60);
+      if (Math.abs(bomber.vy) > 40) sawJink = true;
+    }
+    expect(bomber.evading).toBe(true);
+    expect(sawJink).toBe(true); // pilot is maneuvering
+
+    it.dead = true; // threat gone
+    for (let i = 0; i < 40; i++) g.update(1 / 60);
+    if (!bomber.dead) {
+      expect(bomber.evading).toBe(false);
+      expect(Math.abs(bomber.vy)).toBeLessThan(10); // settled back to level
+    }
   });
 });

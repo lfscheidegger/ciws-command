@@ -115,9 +115,9 @@ export class InterceptorWeapon {
     if (this.timer > 0) this.timer -= dt;
   }
 
-  /** Wave start: the pod is UNLOADED — the first shot is a full reload away. */
+  /** Wave start: the pod comes back fully loaded and ready. */
   refill() {
-    this.timer = this.cooldown;
+    this.timer = 0;
   }
 
   /** Launch a homing Interceptor and start the reload, or null if reloading. */
@@ -178,7 +178,10 @@ export class LaserWeapon {
 
   /** Whether the laser will engage this missile. */
   canTarget(m) {
-    return !m.dead && (m.type === 'drone' || m.type === 'normal');
+    return (
+      !m.dead &&
+      (m.type === 'drone' || m.type === 'normal' || m.type === 'glidebomb')
+    );
   }
 
   fire() {

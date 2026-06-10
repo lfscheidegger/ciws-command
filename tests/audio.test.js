@@ -19,6 +19,7 @@ const EFFECTS = [
   'laser',
   'alarm',
   'nukeBlast',
+  'bombDrop',
 ];
 
 describe('sfx', () => {

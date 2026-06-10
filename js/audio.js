@@ -194,15 +194,29 @@ class Sfx {
     // Gritty low-end thump for the roar.
     const osc = this.ctx.createOscillator();
     osc.type = 'square';
-    osc.frequency.setValueAtTime(88 + Math.random() * 16, t);
-    osc.frequency.exponentialRampToValueAtTime(54, t + 0.04);
+    osc.frequency.setValueAtTime(82 + Math.random() * 14, t);
+    osc.frequency.exponentialRampToValueAtTime(48, t + 0.045);
     const g2 = this.ctx.createGain();
     g2.gain.setValueAtTime(0.0001, t);
-    g2.gain.linearRampToValueAtTime(0.1, t + 0.003);
-    g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+    g2.gain.linearRampToValueAtTime(0.12, t + 0.003);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.055);
     osc.connect(this._route(g2, pan));
     osc.start(t);
-    osc.stop(t + 0.06);
+    osc.stop(t + 0.065);
+
+    // Mechanical action snap: a 6ms high-passed click on top. This transient
+    // is what makes each report read as a cannon instead of an arcade blip.
+    const snap = this.ctx.createBufferSource();
+    snap.buffer = this.noiseBuffer;
+    const sf = this.ctx.createBiquadFilter();
+    sf.type = 'highpass';
+    sf.frequency.value = 2600;
+    const g3 = this.ctx.createGain();
+    g3.gain.setValueAtTime(0.09, t);
+    g3.gain.exponentialRampToValueAtTime(0.0001, t + 0.012);
+    snap.connect(sf).connect(this._route(g3, pan));
+    snap.start(t);
+    snap.stop(t + 0.02);
   }
 
   /** Dry click when firing an empty gun. */
@@ -256,8 +270,11 @@ class Sfx {
       this._tone(3100, 420, 0.4, 0.13, 'sine', 0.03, o); // scream falls away
       this._noise(0.25, 0.22, 'lowpass', 2200, 320, o);
     } else {
-      this._noise(0.16, 0.34, 'lowpass', 1900, 380, o);
-      this._tone(460, 170, 0.16, 0.26, 'triangle', 0, o);
+      // Plain warhead pop, weighted toward the low end for a real thud.
+      this._noise(0.05, 0.22, 'highpass', 4200, 2600, o); // initial crack
+      this._noise(0.18, 0.36, 'lowpass', 1600, 300, o);
+      this._tone(320, 90, 0.2, 0.3, 'triangle', 0, o);
+      this._tone(110, 45, 0.28, 0.2, 'sine', 0.02, o); // sub weight
       this._crackle(pan, 0.03);
     }
   }
@@ -358,6 +375,13 @@ class Sfx {
     this._tone(700, 1500, 0.08, 0.22, 'sine', 0, o); // energy spike up
     this._tone(1500, 180, 0.45, 0.32, 'sawtooth', 0, o); // power-down sweep
     this._noise(0.4, 0.3, 'bandpass', 3200, 500, o); // shatter/sizzle
+  }
+
+  /** A glide bomb separates and noses over: the classic falling whistle. */
+  bombDrop(pan = 0) {
+    if (!this.ready) return;
+    this._tone(1500, 320, 1.3, 0.07, 'sine', 0, { pan, verb: 0.3 });
+    this._tone(1508, 327, 1.3, 0.05, 'sine', 0, { pan }); // beat-frequency flutter
   }
 
   /** Laser shot: a charged zap — bright descending beam tone over a sizzle. */

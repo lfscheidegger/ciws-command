@@ -308,6 +308,8 @@ export class Renderer {
     const points = new THREE.Points(geo, mat);
     points.frustumCulled = false;
     this.scene.add(points);
+    this._clouds = this._clouds || [];
+    this._clouds.push(mat);
     return {
       pos,
       col,
@@ -353,7 +355,7 @@ export class Renderer {
     this.laserSys = this._makeLines(24); // a few segments per live laser beam
     this._buildMissileMeshes();
     this._buildSideEntrantMeshes();
-    this.missileTrailSys = this._makeLines(R.maxMissiles * CONFIG.missile.trailMaxPoints);
+    this.missileTrailSys = this._makeLines(R.maxMissiles * CONFIG.missile.trailMaxPoints * 3);
     this.bulletSys = this._makeLines(R.maxBullets);
     this._buildInterceptorMeshes();
     this.interceptorTrailSys = this._makeLines(
@@ -554,6 +556,54 @@ export class Renderer {
       g.traverse((o) => (o.frustumCulled = false));
       this.scene.add(g);
       this.droneMeshes.push(g);
+    }
+
+    // Bomber: an Su-27-style strike fighter — long slim fuselage, drooped
+    // nose, canopy hump, swept wings, stabilators, twin engine nacelles and
+    // twin canted tail fins.
+    this.bomberMeshes = [];
+    for (let i = 0; i < 6; i++) {
+      const mat = makeMat();
+      const g = new THREE.Group();
+      const fuselage = new THREE.Mesh(new THREE.BoxGeometry(30, 3.6, 4.4), mat);
+      g.add(fuselage);
+      const noseGeo = new THREE.ConeGeometry(1.8, 9, 8);
+      noseGeo.rotateZ(-Math.PI / 2);
+      const nose = new THREE.Mesh(noseGeo, mat);
+      nose.position.set(19, -0.5, 0); // characteristic drooped radome
+      nose.rotation.z = -0.06;
+      g.add(nose);
+      const canopy = new THREE.Mesh(new THREE.BoxGeometry(5, 1.8, 2.6), mat);
+      canopy.position.set(9, 2.4, 0);
+      g.add(canopy);
+      // Swept main wings (two halves, raked back).
+      for (const side of [-1, 1]) {
+        const wing = new THREE.Mesh(new THREE.BoxGeometry(11, 0.7, 14), mat);
+        wing.position.set(-2, -0.6, side * 7.5);
+        wing.rotation.y = side * 0.55; // sweep
+        g.add(wing);
+        const stab = new THREE.Mesh(new THREE.BoxGeometry(6, 0.6, 7.5), mat);
+        stab.position.set(-14, -0.4, side * 4.6);
+        stab.rotation.y = side * 0.45;
+        g.add(stab);
+        // Twin tails, slightly canted outward like the real thing.
+        const fin = new THREE.Mesh(new THREE.BoxGeometry(6, 7.5, 0.7), mat);
+        fin.position.set(-12, 3.6, side * 2.8);
+        fin.rotation.x = side * 0.18;
+        fin.rotation.z = 0.35; // raked back
+        g.add(fin);
+        // Underslung engine nacelle.
+        const nacGeo = new THREE.CylinderGeometry(1.7, 1.5, 9, 8);
+        nacGeo.rotateZ(-Math.PI / 2);
+        const nacelle = new THREE.Mesh(nacGeo, mat);
+        nacelle.position.set(-11, -1.6, side * 2.4);
+        g.add(nacelle);
+      }
+      g.visible = false;
+      g.userData.mat = mat;
+      g.traverse((o) => (o.frustumCulled = false));
+      this.scene.add(g);
+      this.bomberMeshes.push(g);
     }
 
     this.cruiseMeshes = [];
@@ -1052,11 +1102,17 @@ export class Renderer {
     let coneI = 0;
     let droneI = 0;
     let cruiseI = 0;
+    let bomberI = 0;
     let seg = 0;
     for (const m of game.missiles) {
       if (m.stealthed) continue; // cloaked: no mesh, no trail, no glow
       const sideEntrant =
-        m.type === 'drone' || m.type === 'cruise' || m.type === 'stealth';
+        m.type === 'drone' ||
+        m.type === 'cruise' ||
+        m.type === 'stealth' ||
+        m.type === 'bomber';
+      // Air-breathers and unpowered glide bombs leave no reentry trail.
+      const noTrail = sideEntrant || m.type === 'glidebomb';
       // Colour by variant; ballistic types also scale their shared RV cone.
       let colStr = COL.missile;
       let sx = 1;
@@ -1077,6 +1133,12 @@ export class Renderer {
         colStr = COL.missileStealth;
       } else if (m.type === 'drone') {
         colStr = COL.missileDrone;
+      } else if (m.type === 'bomber') {
+        colStr = COL.missileBomber;
+      } else if (m.type === 'glidebomb') {
+        colStr = COL.missileGlidebomb;
+        sx = sz = 0.7;
+        sy = 0.85; // stubby finned bomb
       } else if (m.type === 'nuke') {
         colStr = COL.missileNuke;
         sx = sz = CONFIG.missile.nuke.scale;
@@ -1090,6 +1152,9 @@ export class Renderer {
       if (m.type === 'drone') {
         if (droneI < this.droneMeshes.length) mesh = this.droneMeshes[droneI++];
         if (mesh) mat = mesh.userData.mat;
+      } else if (m.type === 'bomber') {
+        if (bomberI < this.bomberMeshes.length) mesh = this.bomberMeshes[bomberI++];
+        if (mesh) mat = mesh.userData.mat;
       } else if (m.type === 'cruise' || m.type === 'stealth') {
         if (cruiseI < this.cruiseMeshes.length) mesh = this.cruiseMeshes[cruiseI++];
         if (mesh) mat = mesh.userData.mat;
@@ -1102,9 +1167,12 @@ export class Renderer {
         mesh.position.set(this.wx(m.x), this.wy(m.y), 0);
         mesh.scale.set(sx, sy, sz);
         // Point the nose along the instantaneous heading (world dir = hx, -hy)
-        // — RV cones point +Y, the airframe models point +X.
+        // — RV cones point +Y, the airframe models point +X. A left-flying
+        // airframe would come out inverted from the z-rotation alone, so
+        // mirror it vertically to keep canopies and fins skyward.
         const heading = Math.atan2(-m.hy, m.hx);
         mesh.rotation.z = sideEntrant ? heading : heading - Math.PI / 2;
+        if (sideEntrant && m.hx < 0) mesh.scale.y = -sy;
         if (m.hitFlash > 0) {
           mat.color.set(0xffffff);
           mat.emissive.set(0xffffff);
@@ -1122,36 +1190,63 @@ export class Renderer {
             ? 0.75 + 0.25 * Math.sin(game.time * 4 + m.id)
             : 0.8 + 0.2 * Math.sin(game.time * 31 + m.id * 5.1);
         const glowBase =
-          m.type === 'hypersonic' ? 30 : m.type === 'nuke' ? 26 : sideEntrant ? 10 : 20;
+          m.type === 'hypersonic'
+            ? 30
+            : m.type === 'nuke'
+            ? 26
+            : m.type === 'bomber'
+            ? 16 // twin afterburners on a big airframe
+            : sideEntrant
+            ? 10
+            : 20;
         this._pushGlow(this.wx(m.x), this.wy(m.y), c, glowBase * sy * flick, 0.55 * flick);
       }
-      // Trail: stored points, then one extra segment to the live head. The
-      // newest segments run white-hot and cool toward the body colour.
-      // Air-breathing side-entrants leave no reentry trail at all.
-      if (sideEntrant) continue;
+      // Trail: stored points, then one extra segment to the live head — drawn
+      // as THREE layers (a white-hot core and two soft fringes offset
+      // perpendicular to the path) so the plume reads as a volumetric column
+      // that flares wider toward the tail, instead of a 1px line.
+      if (noTrail) continue;
       const pts = m.trail;
       const n = pts.length; // points; head is the (n)th implicit point
-      for (let k = 0; k < n && seg < trails.maxSeg; k++) {
+      for (let k = 0; k < n && seg + 3 <= trails.maxSeg; k++) {
         const a = pts[k];
         const b = k + 1 < n ? pts[k + 1] : m; // last segment goes to head
         const fa = 0.12 + 0.88 * (k / n);
         const fb = 0.12 + 0.88 * ((k + 1) / n);
         const ha = Math.pow(k / n, 4) * 0.85; // heat: ~0 along the tail, hot at the head
         const hb = Math.pow((k + 1) / n, 4) * 0.85;
-        const v = seg * 6;
-        trails.pos[v] = this.wx(a.x);
-        trails.pos[v + 1] = this.wy(a.y);
-        trails.pos[v + 2] = 0;
-        trails.pos[v + 3] = this.wx(b.x);
-        trails.pos[v + 4] = this.wy(b.y);
-        trails.pos[v + 5] = 0;
-        trails.col[v] = (c.r + (1 - c.r) * ha) * fa * 0.7;
-        trails.col[v + 1] = (c.g + (1 - c.g) * ha) * fa * 0.7;
-        trails.col[v + 2] = (c.b + (1 - c.b) * ha) * fa * 0.7;
-        trails.col[v + 3] = (c.r + (1 - c.r) * hb) * fb * 0.7;
-        trails.col[v + 4] = (c.g + (1 - c.g) * hb) * fb * 0.7;
-        trails.col[v + 5] = (c.b + (1 - c.b) * hb) * fb * 0.7;
-        seg++;
+        const ax = this.wx(a.x);
+        const ay = this.wy(a.y);
+        const bx = this.wx(b.x);
+        const by = this.wy(b.y);
+        // Per-segment perpendicular; older segments spread wider (the plume
+        // expands as it cools).
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len = Math.hypot(dx, dy) || 1;
+        const spread = 1 + (1 - k / n) * 2.2;
+        const px = (-dy / len) * spread;
+        const py = (dx / len) * spread;
+        for (const [ox, oy, gain] of [
+          [0, 0, 0.8],
+          [px, py, 0.3],
+          [-px, -py, 0.3],
+        ]) {
+          const v = seg * 6;
+          trails.pos[v] = ax + ox;
+          trails.pos[v + 1] = ay + oy;
+          trails.pos[v + 2] = 0;
+          trails.pos[v + 3] = bx + ox;
+          trails.pos[v + 4] = by + oy;
+          trails.pos[v + 5] = 0;
+          trails.col[v] = (c.r + (1 - c.r) * ha) * fa * gain;
+          trails.col[v + 1] = (c.g + (1 - c.g) * ha) * fa * gain;
+          trails.col[v + 2] = (c.b + (1 - c.b) * ha) * fa * gain;
+          trails.col[v + 3] = (c.r + (1 - c.r) * hb) * fb * gain;
+          trails.col[v + 4] = (c.g + (1 - c.g) * hb) * fb * gain;
+          trails.col[v + 5] = (c.b + (1 - c.b) * hb) * fb * gain;
+          seg++;
+        }
       }
     }
     for (let k = coneI; k < this.missileMeshes.length; k++) {
@@ -1159,6 +1254,9 @@ export class Renderer {
     }
     for (let k = droneI; k < this.droneMeshes.length; k++) {
       this.droneMeshes[k].visible = false;
+    }
+    for (let k = bomberI; k < this.bomberMeshes.length; k++) {
+      this.bomberMeshes[k].visible = false;
     }
     for (let k = cruiseI; k < this.cruiseMeshes.length; k++) {
       this.cruiseMeshes[k].visible = false;
@@ -1351,13 +1449,33 @@ export class Renderer {
     return { x: hit.x + this.simW / 2, y: this.simGroundY - hit.y };
   }
 
-  /** Convert simulation coords to screen pixels (for HUD anchoring). */
+  /**
+   * Convert simulation coords to screen pixels (for HUD anchoring). Reuses a
+   * scratch vector — this runs a dozen+ times per frame, and per-call
+   * allocations add up to GC pauses.
+   */
   worldToScreen(simX, simY, simZ = 0) {
-    const v = new THREE.Vector3(this.wx(simX), this.wy(simY), simZ).project(this.camera);
+    const v = (this._w2s = this._w2s || new THREE.Vector3());
+    v.set(this.wx(simX), this.wy(simY), simZ).project(this.camera);
     return {
       x: (v.x * 0.5 + 0.5) * this.clientW,
       y: (-v.y * 0.5 + 0.5) * this.clientH,
     };
+  }
+
+  /**
+   * Drop render resolution. Called by the main loop's quality governor when
+   * the machine can't hold the frame-rate target — full-screen bloom at
+   * devicePixelRatio 2 is the dominant GPU cost, so stepping the ratio down
+   * buys a large margin for a small sharpness loss.
+   */
+  setPixelRatio(ratio) {
+    this.three.setPixelRatio(ratio);
+    this.setSize(this.clientW, this.clientH);
+    // The point-cloud shaders size their sprites in device pixels.
+    for (const mat of this._clouds || []) {
+      mat.uniforms.uScale.value = ratio;
+    }
   }
 
   render(game) {

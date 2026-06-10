@@ -218,6 +218,17 @@ export class EnemyMissile {
     // Hypersonics barely feel drag, so they stay fast all the way down.
     this.dragMul = type === 'hypersonic' ? CONFIG.missile.hypersonic.dragFactor : 1;
 
+    // Bomber: a powered, level pass across the sky (constructed with
+    // targetY == startY, so the straight-line velocity is horizontal). It
+    // carries a rack of glide bombs the game releases over the field.
+    if (type === 'bomber') {
+      const bc = CONFIG.missile.bomber;
+      this.dragMul = 0; // engines hold its speed for the whole pass
+      this.bombsLeft = randInt(bc.bombs[0], bc.bombs[1]);
+      this.bombTimer = rand(bc.dropGap[0], bc.dropGap[1]);
+      this.evading = false; // set by the game while an interceptor is inbound
+    }
+
     // Side-entry types (cruise / drone) fly a waypoint route instead of a
     // straight dive: in level at their spawn altitude, then (cruise only) a
     // pop-up climb, then a terminal dive onto the target. They steer between
@@ -258,6 +269,18 @@ export class EnemyMissile {
     // the target is preserved — the missile just slows as it sinks into denser
     // air near the ground.
     applyDrag(this, CONFIG.physics.missileDrag * this.dragMul, airDensity(this.cy, groundY), dt);
+
+    // Bomber: jink vertically while an interceptor is inbound — the weave can
+    // make a homing round overshoot and bleed away its energy. Settles back
+    // to level flight once the threat is gone.
+    if (this.type === 'bomber') {
+      const bc = CONFIG.missile.bomber;
+      if (this.evading) {
+        this.vy = Math.sin(this.age * bc.evadeFreq) * bc.evadeAmp;
+      } else {
+        this.vy *= 0.9; // damp back to a level cruise
+      }
+    }
 
     // Waypoint flyers (cruise / drone): steer the heading toward the current
     // waypoint at a capped turn rate; speed stays constant.
@@ -333,8 +356,12 @@ export class EnemyMissile {
       this.hp = Math.min(this.hp, this.maxHp);
       return 'split';
     }
-    if (this.cy >= groundY) {
-      this.y = groundY;
+    // Nukes fuze for an AIR BURST above their target; everything else rides
+    // into the dirt.
+    const impactY =
+      this.type === 'nuke' ? groundY - CONFIG.missile.nuke.burstHeight : groundY;
+    if (this.cy >= impactY) {
+      this.y = impactY;
       this.reachedGround = true;
       this.dead = true;
       return 'impact';

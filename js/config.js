@@ -68,7 +68,18 @@ export const CONFIG = {
 
     // CIWS rounds needed to destroy each variant (tunable per type). A MIRV
     // carrier is armoured; once it splits, the children are regular 1-hit RVs.
-    hp: { normal: 1, evasive: 1, hypersonic: 1, mirv: 3, cruise: 2, stealth: 2, drone: 1, nuke: 40 },
+    hp: {
+      normal: 1,
+      evasive: 1,
+      hypersonic: 1,
+      mirv: 3,
+      cruise: 2,
+      stealth: 2,
+      drone: 1,
+      bomber: 3,
+      glidebomb: 1,
+      nuke: 40,
+    },
     hitFlashTime: 0.12, // seconds the body flashes white on a non-killing hit
 
     // MIRV splitting. The carrier "bus" is larger and a distinct colour until
@@ -100,6 +111,28 @@ export const CONFIG = {
       turnRate: 2.8, // rad/s steering limit between flight legs
     },
 
+    // Bomber: cruises straight across the upper sky dropping glide bombs on
+    // the structures it passes. Killing it pays well but isn't mandatory —
+    // it exits the far side without counting as a leak. The bombs glide in
+    // unpowered and CAN be shot down (as real glide bombs can).
+    bomber: {
+      fromWave: 4,
+      chance: 0.12,
+      speedFactor: 0.7, // a stately pass
+      altFrac: [0.3, 0.45], // mid-altitude transit band (fraction of play height)
+      bombs: [2, 3], // glide bombs dropped per pass
+      dropGap: [1.2, 2.6], // seconds between drops
+      reach: 420, // max horizontal px a dropped bomb can glide
+      // When an interceptor is inbound the pilot jinks: a vertical weave that
+      // can make a homing round overshoot and waste its energy.
+      evadeRange: 500, // starts evading when a homing interceptor is this close
+      evadeAmp: 170, // px/s of vertical jink velocity
+      evadeFreq: 4.5, // rad/s of the jink oscillation
+    },
+    glidebomb: {
+      speedFactor: 0.85,
+    },
+
     // Stealth cruise missile: flies the same profile as the regular cruise
     // missile but is cloaked until its pop-up — invisible, silent, and
     // untargetable by the lock-on/laser (a blind CIWS sweep can still clip it).
@@ -128,9 +161,15 @@ export const CONFIG = {
       fromWave: 5,
       chance: 0.07,
       maxPerWave: 1,
-      speedFactor: 0.7,
+      twoFromWave: 8, // from this wave on, two can come in a single round
+      speedFactor: 1.0, // comes in at full ballistic speed
       scale: 2.4, // visual size multiplier
       warningTime: 3, // seconds between the launch warning and it appearing
+      burstHeight: 120, // air-burst altitude above the ground
+      // Ground effect: levels the target city AND its immediate neighbours
+      // (one slot ≈ 162px) — including the CIWS if it's next door. It never
+      // reaches two slots away.
+      blastRadius: 230,
     },
 
     // Evasive (weaving) variant. The weave is a sum of several sine components
@@ -228,7 +267,18 @@ export const CONFIG = {
     startCredits: 4,
     // Per-type kill bounty. A MIRV carrier pays its big bounty only while
     // unsplit; its children (and a post-split body) pay the normal rate.
-    bounty: { normal: 1, evasive: 2, hypersonic: 3, mirv: 4, cruise: 3, stealth: 4, drone: 1, nuke: 12 },
+    bounty: {
+      normal: 1,
+      evasive: 2,
+      hypersonic: 3,
+      mirv: 4,
+      cruise: 3,
+      stealth: 4,
+      drone: 1,
+      bomber: 4,
+      glidebomb: 1,
+      nuke: 12,
+    },
     clearBonus: 5, // destroyed every enemy this wave (nothing leaked)
     perCitySurvived: 2, // credits per surviving city, end of wave
   },
@@ -258,7 +308,7 @@ export const CONFIG = {
     cityDepth: 18, // building extrusion depth (z)
     bloom: { strength: 0.55, radius: 0.6, threshold: 0.3 },
     maxParticles: 900,
-    maxSmoke: 500,
+    maxSmoke: 800, // headroom for mushroom clouds on top of battle smoke
     maxMissiles: 220,
     maxBullets: 700, // headroom for a max-fire-rate twin-barrel stream
     maxInterceptors: 16,
@@ -305,6 +355,8 @@ export const CONFIG = {
     missileMirv: '#9bff42',
     missileCruise: '#ffd84d',
     missileStealth: '#b9c8ff',
+    missileBomber: '#c08552',
+    missileGlidebomb: '#cbb878',
     missileDrone: '#c9d4df',
     missileNuke: '#ff2438',
     missileTrail: '#ff5a4d',

@@ -17,6 +17,7 @@ import {
 } from './entities.js';
 import { CIWSWeapon, InterceptorWeapon, LaserWeapon } from './weapons.js';
 import { sfx } from './audio.js';
+import { scoreboard } from './scores.js';
 
 const C = CONFIG.colors;
 
@@ -53,6 +54,8 @@ export class Game {
     this._shopRects = []; // hit-test rects, rebuilt each shop frame
 
     this.state = 'menu'; // menu | playing | intermission | gameover
+    this.scoreboard = scoreboard; // injectable for tests
+    this.lastRun = null; // { scores, rank } from the most recent game over
     this.paused = false;
     this.time = 0; // accumulates for HUD animations
     this.lossReason = null; // why the last game ended (for the game-over screen)
@@ -67,6 +70,8 @@ export class Game {
     this.score = 0;
     this.wave = 0;
     this.toSpawn = 0;
+    this.waveSpawnTotal = 0;
+    this.mushrooms = []; // active mushroom-cloud emitters {x, y, groundY, age}
     this.spawnTimer = 0;
     this.spawnGap = CONFIG.wave.baseSpawnGap;
     this.waveEndTimer = 0; // grace beat after the last threat before clearing
@@ -178,6 +183,7 @@ export class Game {
     this.laserBeamLive = null;
     this.shieldLevel = 0;
     this.pendingNukes = [];
+    this.mushrooms = [];
     this.paused = false; // restarting (R) always unpauses
     this.layout();
     this.renderer.syncStructures(this); // rebuild meshes for the fresh skyline
@@ -208,6 +214,7 @@ export class Game {
     }
     this.toSpawn =
       CONFIG.wave.baseMissiles + (n - 1) * CONFIG.wave.missilesPerWave;
+    this.waveSpawnTotal = this.toSpawn; // for "how far into the wave are we"
     this.spawnGap = Math.max(
       CONFIG.wave.minSpawnGap,
       CONFIG.wave.baseSpawnGap - (n - 1) * CONFIG.wave.spawnGapPerWave
@@ -282,6 +289,8 @@ export class Game {
     this.state = 'gameover';
     this.lossReason = reason;
     this.laserBeamLive = null;
+    // Bank the run on the local high-score table (no-op without storage).
+    this.lastRun = this.scoreboard.add(this.score, this.wave);
     sfx.gameOver();
   }
 
@@ -332,6 +341,10 @@ export class Game {
     }
     if (type === 'cruise' || type === 'stealth') {
       this.spawnCruise(type);
+      return;
+    }
+    if (type === 'bomber') {
+      this.spawnBomber();
       return;
     }
     if (type === 'nuke') {
@@ -399,6 +412,42 @@ export class Game {
     }
   }
 
+  /** Bomber: a level pass across the upper sky, dropping bombs on the way. */
+  spawnBomber() {
+    const bc = CONFIG.missile.bomber;
+    const fromLeft = Math.random() < 0.5;
+    const startX = fromLeft ? -40 : this.W + 40;
+    const exitX = fromLeft ? this.W + 100 : -100;
+    const startY = this.groundY * rand(bc.altFrac[0], bc.altFrac[1]);
+    const speed = this.rollSpeed() * bc.speedFactor;
+    this.missiles.push(
+      new EnemyMissile(startX, startY, exitX, startY, speed, 0, 0, 'bomber')
+    );
+  }
+
+  /** Release one glide bomb from a bomber onto something in glide reach. */
+  dropGlideBomb(bomber) {
+    const bc = CONFIG.missile.bomber;
+    const dir = Math.sign(bomber.vx) || 1;
+    // Prefer a structure ahead and within glide reach; sometimes (or with
+    // nothing in reach) the bomb just falls long into the dirt.
+    const inReach = this.aimableStructures().filter(
+      (s) => (s.x - bomber.x) * dir > 40 && Math.abs(s.x - bomber.x) < bc.reach
+    );
+    let tx;
+    if (inReach.length && Math.random() >= CONFIG.missile.randomAimChance) {
+      const target = pick(inReach);
+      tx = target.x + rand(-CONFIG.missile.aimJitter, CONFIG.missile.aimJitter);
+    } else {
+      tx = bomber.x + dir * rand(80, bc.reach);
+    }
+    const speed = this.rollSpeed() * CONFIG.missile.glidebomb.speedFactor;
+    this.missiles.push(
+      new EnemyMissile(bomber.x, bomber.y + 14, tx, this.groundY, speed, 0, 0, 'glidebomb')
+    );
+    sfx.bombDrop(this.pan(bomber.x));
+  }
+
   /**
    * Nuke: the launch is DETECTED a few seconds before the warhead appears —
    * klaxon plus a synthetic "Nuclear launch detected" voice — then it spawns.
@@ -410,10 +459,19 @@ export class Game {
     sfx.say('Nuclear launch detected');
   }
 
-  /** The warned-of nuke actually enters: slow, armoured, aimed at a city. */
+  /**
+   * The warned-of nuke actually enters: armoured, full ballistic speed, and
+   * aimed at an INNER city — its blast levels the neighbours too, so an
+   * outer-city shot would waste half its yield off the map. It only targets
+   * the outermost cities when nothing inner is left standing.
+   */
   launchNuke() {
-    const aliveCities = this.cities.filter((c) => c.alive);
-    const target = aliveCities.length ? pick(aliveCities) : pick(this.cities);
+    const alive = this.cities.filter((c) => c.alive);
+    const outerA = this.cities[0];
+    const outerB = this.cities[this.cities.length - 1];
+    const inner = alive.filter((c) => c !== outerA && c !== outerB);
+    const pool = inner.length ? inner : alive.length ? alive : this.cities;
+    const target = pick(pool);
     const startX = rand(60, this.W - 60);
     const speed = this.rollSpeed() * CONFIG.missile.nuke.speedFactor;
     this.missiles.push(
@@ -429,9 +487,15 @@ export class Game {
    */
   chooseThreat() {
     const M = CONFIG.missile;
+    // Nukes never open or close a wave — they arrive while you're already
+    // busy. Late waves can roll two.
+    const nukeCap = this.wave >= M.nuke.twoFromWave ? 2 : M.nuke.maxPerWave;
+    const spawnedSoFar = this.waveSpawnTotal - this.toSpawn;
     if (
       this.wave >= M.nuke.fromWave &&
-      this.nukesSpawned < M.nuke.maxPerWave &&
+      this.nukesSpawned < nukeCap &&
+      spawnedSoFar >= 2 && // not among the first two
+      this.toSpawn >= 2 && // and at least one more follows it
       Math.random() < M.nuke.chance
     ) {
       return { type: 'nuke', children: 0 };
@@ -444,6 +508,9 @@ export class Game {
     }
     if (this.wave >= M.drone.fromWave && Math.random() < M.drone.chance) {
       return { type: 'drone', children: 0 };
+    }
+    if (this.wave >= M.bomber.fromWave && Math.random() < M.bomber.chance) {
+      return { type: 'bomber', children: 0 };
     }
     if (this.wave >= M.hypersonic.fromWave && Math.random() < M.hypersonic.chance) {
       return { type: 'hypersonic', children: 0 };
@@ -511,6 +578,35 @@ export class Game {
     removeWhere(this.explosions, (e) => e.age >= e.dur);
     for (const b of this.laserBeams) b.life -= dt;
     removeWhere(this.laserBeams, (b) => b.life <= 0);
+
+    // Mushroom clouds: after a nuke burst, keep feeding smoke into a rising
+    // stem and a spreading cap for a few seconds. The hot dust glows warm
+    // early, then cools to ash gray as it climbs.
+    for (const mc of this.mushrooms) {
+      mc.age += dt;
+      const capY = mc.y - Math.min(300, mc.age * 110); // cap climbs, then slows
+      if (Math.random() < dt * 30) {
+        // Stem: a narrow column boiling up from the ground to the cap.
+        smokePuff(
+          this.particles,
+          mc.x + rand(-24, 24),
+          rand(capY + 40, mc.groundY - 6),
+          1,
+          mc.age < 1.2 ? '#c89a6e' : '#6e6258'
+        );
+      }
+      if (mc.age > 0.4 && Math.random() < dt * 26) {
+        // Cap: a broad, flattened head spreading at the top.
+        smokePuff(
+          this.particles,
+          mc.x + rand(-95, 95),
+          capY + rand(-24, 18),
+          1,
+          mc.age < 1.6 ? '#caa57e' : '#7a6e62'
+        );
+      }
+    }
+    removeWhere(this.mushrooms, (mc) => mc.age > 4.5);
     for (const ft of this.floatTexts) ft.life -= dt;
     removeWhere(this.floatTexts, (ft) => ft.life <= 0);
     if (this.shakeTime > 0) this.shakeTime -= dt;
@@ -675,6 +771,11 @@ export class Game {
       if (shots.length) {
         this.bullets.push(...shots);
         sfx.fire(this.pan(active.x));
+        // Powder smoke drifting off the muzzle while the gun runs.
+        if (Math.random() < 0.25) {
+          const mz = active.muzzle();
+          smokePuff(this.particles, mz.x, mz.y, 1, '#9aa3ad');
+        }
       }
     }
 
@@ -706,10 +807,28 @@ export class Game {
       else if (r === 'impact') this.impact(m);
       // Insurance: anything that strays far outside the field (a side-entry
       // flyer that lost its way) dies as a leak rather than stalling the wave.
+      // A bomber finishing its pass just exits — that's not a leak.
       else if (m.age > 3 && (m.x < -400 || m.x > this.W + 400 || m.y < -500)) {
         m.dead = true;
-        this.waveLeaks++;
+        if (m.type !== 'bomber') this.waveLeaks++;
       }
+    }
+
+    // Bombers: release glide bombs over the field, and break into evasive
+    // jinks while a homing interceptor is bearing down on them.
+    const evadeR2 = CONFIG.missile.bomber.evadeRange * CONFIG.missile.bomber.evadeRange;
+    for (const m of this.missiles) {
+      if (m.type !== 'bomber' || m.dead) continue;
+      m.evading = this.interceptorList.some(
+        (it) => !it.dead && it.target === m && dist2(it.x, it.y, m.x, m.y) < evadeR2
+      );
+      if (m.bombsLeft <= 0) continue;
+      m.bombTimer -= dt;
+      if (m.bombTimer > 0) continue;
+      if (m.x < 80 || m.x > this.W - 80) continue; // hold until over the field
+      m.bombsLeft--;
+      m.bombTimer = rand(CONFIG.missile.bomber.dropGap[0], CONFIG.missile.bomber.dropGap[1]);
+      this.dropGlideBomb(m);
     }
 
     // Shields intercept missiles at the dome before they reach the ground.
@@ -828,6 +947,11 @@ export class Game {
       explodeRing(this.particles, m.x, m.y, C.missileDrone, 10);
       this.boom(m.x, m.y, 'small', C.missileDrone);
       sfx.kill('drone', pan);
+    } else if (m.type === 'bomber') {
+      // A big airframe coming apart: heavy burning debris carries forward.
+      explodeCone(this.particles, m.x, m.y, m.hx, m.hy, C.missileBomber, 30);
+      this.boom(m.x, m.y, 'large', C.missileBomber);
+      sfx.kill('mirv', pan); // heavy double thump suits a dying airframe
     } else if (m.type === 'nuke') {
       // Killed before detonation: the carcass blows big, but no chain reaction.
       explode(this.particles, m.x, m.y, C.missileNuke, 32);
@@ -869,20 +993,23 @@ export class Game {
   impact(missile) {
     this.waveLeaks++; // a threat reached the ground (breaks the all-clear bonus)
 
-    // A nuke on the ground levels every city on that half of the map.
+    // A nuke AIR-BURSTS above its target and levels the target city plus its
+    // immediate neighbours — including the CIWS if it's next door. Two slots
+    // away is outside the lethal radius.
     if (missile.type === 'nuke') {
-      const leftSide = missile.x < this.W / 2;
-      for (const c of this.cities) {
-        if (c.alive && c.x < this.W / 2 === leftSide) {
-          c.alive = false;
-          c.destroyedWave = this.wave;
-          c.shieldMax = 0;
-          c.shields = 0;
-          c.shieldFlash = 0;
+      const r = CONFIG.missile.nuke.blastRadius;
+      for (const s of [...this.cities, ...this.turrets]) {
+        if (s.alive && Math.abs(s.x - missile.x) <= r + this.structureHalfWidth(s)) {
+          s.alive = false;
+          s.destroyedWave = this.wave;
+          s.shieldMax = 0;
+          s.shields = 0;
+          s.shieldFlash = 0;
         }
       }
-      explode(this.particles, missile.x, this.groundY, C.groundExplosion, 70);
-      this.boom(missile.x, this.groundY, 'nuke', '#ffe6a8');
+      explode(this.particles, missile.x, missile.y, C.groundExplosion, 70);
+      this.boom(missile.x, missile.y, 'nuke', '#ffe6a8');
+      this.mushrooms.push({ x: missile.x, y: missile.y, groundY: this.groundY, age: 0 });
       this.shakeTime = 1.0;
       this.shakeMag = 22;
       sfx.nukeBlast(this.pan(missile.x));
@@ -1349,25 +1476,54 @@ export class Game {
     } else if (this.state === 'intermission') {
       this.drawShop(ctx);
     } else if (this.state === 'gameover') {
-      this.dim(ctx, 0.6);
-      this.text((this.lossReason || 'Defeat').toUpperCase(), cx, this.screenH * 0.38, {
+      this.dim(ctx, 0.65);
+      this.text((this.lossReason || 'Defeat').toUpperCase(), cx, this.screenH * 0.18, {
         size: 54,
         align: 'center',
         weight: 'bold',
         color: C.missile,
         glow: true,
       });
-      this.text(`Final Score  ${this.score}`, cx, this.screenH * 0.38 + 50, {
-        size: 24,
-        align: 'center',
-        color: C.hud,
-      });
-      this.text(`You reached wave ${this.wave}`, cx, this.screenH * 0.38 + 82, {
-        size: 18,
+      const isBest = this.lastRun && this.lastRun.rank === 0 && this.score > 0;
+      this.text(
+        isBest ? `NEW HIGH SCORE  ${this.score}` : `Final Score  ${this.score}`,
+        cx,
+        this.screenH * 0.18 + 48,
+        { size: 24, align: 'center', color: isBest ? C.credits : C.hud, glow: isBest }
+      );
+      this.text(`You reached wave ${this.wave}`, cx, this.screenH * 0.18 + 78, {
+        size: 16,
         align: 'center',
         color: C.hudDim,
       });
-      this.text('CLICK or press SPACE to try again', cx, this.screenH * 0.62, {
+
+      // High-score table (kept in localStorage; the current run glows).
+      const scores = this.lastRun ? this.lastRun.scores : [];
+      if (scores.length) {
+        const top = this.screenH * 0.36;
+        this.text('HIGH SCORES', cx, top, {
+          size: 16,
+          align: 'center',
+          weight: 'bold',
+          color: C.hud,
+        });
+        scores.slice(0, 8).forEach((s, i) => {
+          const mine = this.lastRun.rank === i;
+          const y = top + 28 + i * 24;
+          const col = mine ? C.credits : C.hudDim;
+          this.text(`${i + 1}.`, cx - 170, y, { size: 14, align: 'right', color: col });
+          this.text(`${s.score}`, cx - 60, y, {
+            size: 14,
+            align: 'right',
+            weight: mine ? 'bold' : 'normal',
+            color: col,
+          });
+          this.text(`wave ${s.wave}`, cx + 20, y, { size: 13, color: col });
+          this.text(s.date || '', cx + 170, y, { size: 12, align: 'right', color: col });
+        });
+      }
+
+      this.text('CLICK or press SPACE to try again', cx, this.screenH * 0.85, {
         size: 20,
         align: 'center',
         weight: 'bold',

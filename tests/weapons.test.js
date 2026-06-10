@@ -113,15 +113,14 @@ describe('InterceptorWeapon', () => {
     expect(w.launch(0, 0, null)).toBeInstanceOf(Interceptor);
   });
 
-  it('refill leaves the pod UNLOADED (waves start one reload from a shot)', () => {
+  it('refill brings the pod back fully loaded at wave start', () => {
     const w = new InterceptorWeapon();
     w.buy();
     w.timer = 0;
-    expect(w.canLaunch).toBe(true); // loaded
+    w.launch(0, 0, null); // mid-reload at wave end
+    expect(w.canLaunch).toBe(false);
     w.refill();
-    expect(w.canLaunch).toBe(false); // wave start: reloading
-    w.update(w.cooldown);
-    expect(w.canLaunch).toBe(true);
+    expect(w.canLaunch).toBe(true); // loaded and ready
   });
 
   it('cooldown upgrades shorten the reload down to the configured floor', () => {

@@ -62,8 +62,8 @@ screen at the start covers all of this in-game.
   heading for the centre is top priority.
 - **Interceptors (autonomous)** — a **cheap armory purchase** (the natural
   first buy) that fields homing anti-missiles with unlimited stock, gated by
-  a **reload cooldown** (6s at the start; shop upgrades buy it down to 1s),
-  and the pod **starts every wave unloaded**. The launcher fires
+  a **reload cooldown** (6s at the start; shop upgrades buy it down to 1s);
+  the pod comes back fully loaded each wave. The launcher fires
   itself at the **highest-value, most distant threat** — it never engages
   drones (a blast can still catch one), can't see cloaked stealth, and won't
   shoot inside its minimum engagement distance. Missiles **cold-launch
@@ -137,6 +137,8 @@ Prices, amounts and earnings live in `config.economy`, `config.shop`, and
   miss into the gaps regardless.
 - Clearing a wave awards bonuses for surviving cities, and the interceptor
   launcher and laser come back fully charged.
+- Game over shows a **local high-score table** (top 10, stored in
+  localStorage) with your run highlighted.
 
 ### Threats
 
@@ -147,9 +149,10 @@ Prices, amounts and earnings live in `config.economy`, `config.shop`, and
 | Evasive RV (purple) | wave 2+ | Weaves on an irregular path; 1 hit |
 | MIRV bus (green, large) | wave 3+ | Armoured (3 hits); splits into red RVs at altitude |
 | Cruise missile (gold) | wave 3+ | Enters from a screen edge at low altitude, pops up, then dives; 2 hits |
+| Bomber (bronze, Su-27 silhouette) | wave 4+ | Crosses at mid altitude dropping 2–3 **glide bombs**, and **jinks evasively** when an interceptor closes — it occasionally dodges one outright (1 hit each — yes, you can shoot down glide bombs; real ones get intercepted too). Killing the bomber pays 4 but it exits without leaking if you let it go; 3 hits |
 | Hypersonic (orange dart) | wave 4+ | Very fast and barely slows in the dense air; 1 hit but hard to track |
 | Stealth cruise (pale, ghostly) | wave 6+ | Flies the cruise profile **cloaked** — invisible, silent, no lock-on, no laser — until its pop-up; a blind CIWS sweep can still clip it; 2 hits |
-| Nuke (crimson, huge) | wave 5+ | Announced by a klaxon and a **"Nuclear launch detected"** voice a few seconds before it appears. **Massively armoured** (40 hits — interceptors alone can't stop it; the gun must pile on or it WILL land), only targets cities — if it lands, it levels **every city on that half of the map** (max 1/wave) |
+| Nuke (crimson, huge) | wave 5+ | Announced by a klaxon and a **"Nuclear launch detected"** voice; never the first or last threat of a wave (two possible in late waves). Full ballistic speed and **massively armoured** (40 hits — interceptors alone can't stop it). Targets **inner cities** and **air-bursts** above them, leveling the target **and both neighbours** — including the CIWS if it's next door — then a mushroom cloud climbs |
 
 A non-killing hit on the armoured MIRV flashes it white with a metallic ting —
 chip it down with the gun, or pop the whole bus with one interceptor before it

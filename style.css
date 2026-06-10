@@ -39,3 +39,21 @@ body {
   z-index: 1;
   pointer-events: none;
 }
+
+/* Unobtrusive author credit -> the GitHub repo. */
+#credit {
+  position: fixed;
+  right: 10px;
+  bottom: 8px;
+  z-index: 2;
+  font: 11px 'Courier New', monospace;
+  color: #5a6b7d;
+  text-decoration: none;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+#credit:hover {
+  color: #bcd2e6;
+  text-decoration: underline;
+}
