@@ -11,6 +11,7 @@ import {
   Turret,
   EnemyMissile,
   Flare,
+  Particle,
   explode,
   explodeRing,
   explodeCone,
@@ -1141,12 +1142,23 @@ export class Game {
       this.dropGlideBomb(m);
     }
 
-    // Burning flares: fall away from the bomber, sputter bright (the trail is
-    // pure particles — a hot spark plus smoke), and burn out.
+    // Burning flares: fall away from the bomber as small, tight points of
+    // light — a dim ember trail, not a fireworks display. The sparks are
+    // shrunk and mostly follow the flare so the effect stays compact.
     for (const f of this.flares) {
       f.update(dt);
-      explode(this.particles, f.x, f.y, C.flare, 1);
-      if (Math.random() < dt * 18) smokePuff(this.particles, f.x, f.y, 1, C.rocketSmoke);
+      if (Math.random() < dt * 30) {
+        const p = new Particle(f.x, f.y, C.flare, 'spark');
+        p.vx = p.vx * 0.15 + f.vx * 0.3;
+        p.vy = p.vy * 0.15 + f.vy * 0.3;
+        p.size *= 0.5;
+        this.particles.push(p);
+      }
+      if (Math.random() < dt * 5) {
+        const s = new Particle(f.x, f.y, C.rocketSmoke, 'smoke');
+        s.size *= 0.5; // a wisp, not a cloud
+        this.particles.push(s);
+      }
     }
     removeWhere(this.flares, (f) => f.dead);
 
