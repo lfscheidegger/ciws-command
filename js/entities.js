@@ -109,7 +109,6 @@ export class Bullet {
     this.y = y;
     this.vx = Math.cos(angle) * s;
     this.vy = Math.sin(angle) * s;
-    this.climbing = this.vy < 0; // fired upward (sim +y is down)
     this.life = CONFIG.bullet.lifetime;
     this.dead = false;
   }
@@ -120,9 +119,11 @@ export class Bullet {
     this.vy += CONFIG.physics.gravity * CONFIG.physics.bulletGravityMul * dt;
     this.x += this.vx * dt;
     this.y += this.vy * dt;
-    // A round fired upward self-destructs at apogee — no tracers raining
-    // back down on the cities.
-    if (this.climbing && this.vy >= 0) this.dead = true;
+    // A round burns out once it's spent — slowed below fadeSpeed. A vertical
+    // shot still dies near its apogee (speed -> 0 up there), but a flat shot
+    // keeps flying its whole arc instead of vanishing as it noses over.
+    const sp2 = this.vx * this.vx + this.vy * this.vy;
+    if (sp2 < CONFIG.bullet.fadeSpeed * CONFIG.bullet.fadeSpeed) this.dead = true;
     this.life -= dt;
     if (this.life <= 0) this.dead = true;
   }

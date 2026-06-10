@@ -178,9 +178,10 @@ exponentially with altitude), and quadratic drag scales with that density and
 with speed:
 
 - **CIWS rounds** feel gravity and drag — they slow and **arc**, so long shots
-  need lead (the gun is genuinely close-in). Drag is tuned so a straight-up
-  burst **just barely reaches the top of the field**, and climbing rounds
-  **self-destruct at apogee** — no tracers raining back onto the cities.
+  need lead (the gun is genuinely close-in). A round **burns out once it slows
+  below a threshold speed**: a straight-up burst just reaches the top of the
+  field and dies near apogee, while a flat shot keeps flying its whole arc —
+  still lethal on the way down.
 - **Enemy missiles** feel drag only (no gravity, so they still track their
   target) — they **decelerate as they sink** into denser air, giving you more
   time to engage them low.

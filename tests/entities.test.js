@@ -85,6 +85,29 @@ describe('Bullet', () => {
     b.update(CONFIG.bullet.lifetime + 0.1, G);
     expect(b.dead).toBe(true);
   });
+
+  it('burns out on speed, not on nosing over', () => {
+    // A vertical shot still dies near its apogee (it runs out of speed)...
+    const up = new Bullet(700, G - 21, -Math.PI / 2);
+    let t = 0;
+    while (!up.dead && t < 5) {
+      up.update(1 / 60, G);
+      t += 1 / 60;
+    }
+    expect(up.dead).toBe(true);
+    expect(Math.hypot(up.vx, up.vy)).toBeLessThan(CONFIG.bullet.fadeSpeed + 1);
+    expect(t).toBeLessThan(CONFIG.bullet.lifetime); // not just the life timer
+
+    // ...but a shallow shot survives its apex and keeps flying as it falls.
+    const flat = new Bullet(0, G - 600, (-20 * Math.PI) / 180);
+    let fell = false;
+    for (let i = 0; i < 90 && !flat.dead; i++) {
+      flat.update(1 / 60, G);
+      if (flat.vy > 0) fell = true; // past apex, descending
+    }
+    expect(fell).toBe(true);
+    expect(flat.dead).toBe(false); // still alive and lethal on the way down
+  });
 });
 
 describe('EnemyMissile', () => {

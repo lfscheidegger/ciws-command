@@ -22,13 +22,13 @@ export const CONFIG = {
     bulletGravityMul: 1.0, // CIWS rounds could feel extra gravity if > 1.0 (more visible drop)
     scaleHeight: 0.5, // density e-folds over this fraction of the play height
     densityFloor: 0.1, // minimum air density (way up high)
-    bulletDrag: 0.00035, // quadratic drag coeff for CIWS rounds — tuned so a
-    // straight-up burst just barely kisses the top of the field
+    bulletDrag: 0.00033, // quadratic drag coeff for CIWS rounds — tuned (with
+    // bullet.fadeSpeed) so a straight-up burst just kisses the top of the field
     missileDrag: 0.0011, // drag coeff for enemy missiles (slows them down low)
     // Tuned so a clean (low-turn) flight can reach the far top corners of the
     // field before bleeding to self-destruct speed; hard maneuvering against
     // crossing/jinking targets still scrubs enough energy to cause misses.
-    interceptorDrag: 0.0013, // drag coeff for coasting interceptors
+    interceptorDrag: 0.0008, // drag coeff for coasting interceptors (long glide)
   },
   cityCount: 6,
   turretCount: 1, // a single central CIWS — one hit on it loses the game
@@ -50,6 +50,10 @@ export const CONFIG = {
     speed: 1120, // px/s muzzle velocity
     damage: 1, // HP one CIWS round strips from whatever it hits
     lifetime: 3.5, // seconds before the round self-destructs
+    // A round burns out once it slows to this speed — a vertical shot still
+    // dies near the top of the field, but a flat shot keeps flying its full
+    // arc instead of vanishing the moment it noses over.
+    fadeSpeed: 150,
     radius: 2,
     tracerLength: 18, // visual length of the tracer streak
   },
@@ -236,18 +240,22 @@ export const CONFIG = {
     smokeRate: 50, // boost-phase exhaust puffs per second (white solid-motor smoke)
     // Two-phase flight, like a real missile: a powered boost then a coast.
     launchSpeed: 170, // px/s off the rail
-    boostTime: 0.7, // seconds of powered flight
-    thrust: 1700, // px/s^2 acceleration during boost (gentler ramp)
-    maxSpeed: 1060, // speed cap (outpaces fast threats, but not by much)
+    // A long, gentle burn into a long glide: peak acceleration and top speed
+    // are modest, but the round keeps its energy much further into the coast.
+    // Balance-tested vs the sandbox scenarios — slightly weaker against
+    // hypersonics (intended), roughly flat everywhere else.
+    boostTime: 1.05, // seconds of powered flight
+    thrust: 1100, // px/s^2 acceleration during boost
+    maxSpeed: 880, // speed cap (outpaces fast threats, but not by much)
     turnRate: 3.8, // rad/s homing turn rate (tighter turns, can still overshoot)
     steerAfterClimb: 100, // px of straight vertical climb before it may steer
     turnBleed: 0.45, // fraction of speed scrubbed per radian of post-boost turning
-    minSpeed: 240, // below this it lacks maneuvering energy and self-destructs
+    minSpeed: 200, // below this it lacks maneuvering energy and self-destructs
     detonateRadius: 24, // must pass this close to detonate (tighter => can miss)
     blastRadius: 72, // area damage radius on detonation
     blastDamage: 7, // HP one blast strips from everything in radius — a 40-HP
     // nuke shrugs off interceptors alone; the gun has to help or it lands
-    lifetime: 5.0, // seconds before self-destruct
+    lifetime: 6.0, // seconds before self-destruct (slower top speed, longer legs)
     trailMaxPoints: 20,
     trailMinStep: 6,
   },
