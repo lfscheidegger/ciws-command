@@ -374,6 +374,7 @@ export const CONFIG = {
   ui: {
     floatTextLife: 0.95, // seconds a floating "+credits" label lasts
     floatTextRise: 56, // px it drifts upward over its life
+    tagHoverRadius: 120, // sim px — threat ID boxes show near the pointer only
   },
 
   // --- Visual / palette (CSS color strings; THREE.Color accepts these) ----

@@ -1151,6 +1151,11 @@ describe('Bombers & glide bombs', () => {
     bomber.hp = 99999;
     g.mouseX = 0;
     g.mouseY = g.groundY;
+    // Pin a leisurely cruise: at full combat speed a worst-case pair of
+    // dropGap rolls (2.6s + 2.6s) can outlast the crossing, leaving a bomb
+    // racked — this test is about the unhurried baseline behaviour.
+    bomber.speed = 150;
+    bomber.vx = Math.sign(bomber.vx) * 150;
 
     const leaks0 = g.waveLeaks;
     let guard = 0;
@@ -1200,6 +1205,19 @@ describe('Bombers & glide bombs', () => {
     g.update(1 / 60);
     expect(bomber.dead).toBe(true);
     expect(g.waveLeaks).toBe(leaks0);
+  });
+});
+
+describe('Threat ID tags', () => {
+  it('maps every type to a STRINGS name, hides cloaked, flags MIRV buses', () => {
+    const g = newGame();
+    expect(g.threatLabel({ type: 'normal', splitsRemaining: 0 })).toBe(STRINGS.threatNames.normal);
+    expect(g.threatLabel({ type: 'normal', splitsRemaining: 3 })).toBe(STRINGS.threatNames.mirv);
+    expect(g.threatLabel({ type: 'stealth', stealthed: true })).toBeNull();
+    expect(g.threatLabel({ type: 'stealth', stealthed: false })).toBe(STRINGS.threatNames.stealth);
+    for (const t of ['evasive', 'hypersonic', 'cruise', 'drone', 'bomber', 'glidebomb', 'nuke']) {
+      expect(g.threatLabel({ type: t })).toBe(STRINGS.threatNames[t]);
+    }
   });
 });
 

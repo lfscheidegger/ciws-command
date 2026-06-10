@@ -152,6 +152,20 @@ export const STRINGS = {
     },
   },
 
+  // --- Threat ID tags (the flavor targeting boxes over enemies) ------------
+  threatNames: {
+    normal: 'RV',
+    mirv: 'MIRV', // a carrier bus that hasn't split yet
+    evasive: 'EVASIVE RV',
+    hypersonic: 'HYPERSONIC',
+    cruise: 'CRUISE MSL',
+    stealth: 'STEALTH MSL', // only readable once it decloaks
+    drone: 'UAV',
+    bomber: 'BOMBER',
+    glidebomb: 'GLIDE BOMB',
+    nuke: 'NUKE',
+  },
+
   // --- Secret dev console (backquote `) ------------------------------------
   dev: {
     title: 'DEV CONSOLE',

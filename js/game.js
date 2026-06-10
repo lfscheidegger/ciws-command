@@ -1387,6 +1387,7 @@ export class Game {
     if (aiming) {
       this.drawAimLine(ctx);
     }
+    if (this.state === 'playing') this.drawThreatTags(ctx);
     this.drawFloatTexts(ctx);
     this.drawHUD(ctx);
     ctx.restore();
@@ -1397,6 +1398,64 @@ export class Game {
     // The crosshair stands in for the OS cursor, so draw it last (on top of
     // menus / the shop / game-over) in every state.
     this.drawCrosshair(ctx);
+  }
+
+  /** The ID tag shown in a threat's targeting box, or null for cloaked. */
+  threatLabel(m) {
+    if (m.stealthed) return null;
+    if (m.splitsRemaining > 0) return T.threatNames.mirv;
+    return T.threatNames[m.type] ?? null;
+  }
+
+  /**
+   * Flavor targeting boxes: thin corner brackets + an ID tag, like a
+   * fire-control display interrogating a track. Shown only for threats near
+   * the pointer — point at something to ask "what is that?" — and fading
+   * with distance so they never clutter the whole sky. No gameplay effect.
+   */
+  drawThreatTags(ctx) {
+    // Per-type bracket half-size, roughly tracking the airframe's bulk.
+    const half = { bomber: 26, nuke: 18, cruise: 13, stealth: 13, drone: 9, glidebomb: 8 };
+    const hoverR2 = CONFIG.ui.tagHoverRadius * CONFIG.ui.tagHoverRadius;
+    const drawn = []; // label anchor points already used this frame
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (const m of this.missiles) {
+      if (m.dead) continue;
+      const label = this.threatLabel(m);
+      if (!label) continue;
+      if (m.x < -20 || m.x > this.W + 20 || m.y < -20) continue; // off-field
+      const d2 = dist2(m.x, m.y, this.mouseX, this.mouseY);
+      if (d2 > hoverR2) continue; // only interrogate tracks near the pointer
+      const fade = 1 - (d2 / hoverR2) ** 2; // soft edge instead of popping
+      const p = this.renderer.worldToScreen(m.x, m.y);
+      const h = half[m.type] ?? 11;
+      const arm = Math.max(3, h * 0.45); // corner bracket arm length
+      const hot = m.type === 'nuke';
+      const col = hot ? C.crosshairEmpty : C.lock;
+      ctx.globalAlpha = (hot ? 0.9 : 0.55) * fade;
+      ctx.strokeStyle = col;
+      for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const cx = p.x + sx * h;
+        const cy = p.y + sy * h;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy + arm * -sy);
+        ctx.lineTo(cx, cy);
+        ctx.lineTo(cx + arm * -sx, cy);
+        ctx.stroke();
+      }
+      // De-clutter: a tag that would overprint one already on screen (e.g. a
+      // glide bomb just off its bomber's rack) keeps its brackets but stays
+      // silent — the display only labels what it can write legibly.
+      const ly = p.y + h + 12;
+      const clear = drawn.every((d) => Math.abs(d.x - p.x) > 64 || Math.abs(d.y - ly) > 12);
+      if (clear) {
+        drawn.push({ x: p.x, y: ly });
+        this.text(label, p.x, ly, { size: 9, align: 'center', color: col });
+      }
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
   }
 
   drawAimLine(ctx) {
