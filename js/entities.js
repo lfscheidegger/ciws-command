@@ -226,7 +226,12 @@ export class EnemyMissile {
       this.dragMul = 0; // engines hold its speed for the whole pass
       this.bombsLeft = randInt(bc.bombs[0], bc.bombs[1]);
       this.bombTimer = rand(bc.dropGap[0], bc.dropGap[1]);
-      this.evading = false; // set by the game while an interceptor is inbound
+      this.bombsAborted = false; // once forced to jink, the run never resumes
+      this.evading = false; // set by the game while a threat is inbound
+      this.breaking = false; // terminal hard pull (homing round in close)
+      this.breakDir = 1; // committed pull direction, chosen at break start
+      this.flareBursts = bc.flares.bursts; // decoy bursts left in the dispenser
+      this.flareTimer = 0; // ready to punch flares the moment a threat appears
     }
 
     // Side-entry types (cruise / drone) fly a waypoint route instead of a
@@ -270,15 +275,56 @@ export class EnemyMissile {
     // air near the ground.
     applyDrag(this, CONFIG.physics.missileDrag * this.dragMul, airDensity(this.cy, groundY), dt);
 
-    // Bomber: jink vertically while an interceptor is inbound — the weave can
-    // make a homing round overshoot and bleed away its energy. Settles back
-    // to level flight once the threat is gone.
+    // Bomber defensive flying. Weave while a threat is out there; when a
+    // homing round closes to the break range, commit to one hard vertical
+    // pull — displacement faster than the round's turn-rate correction is
+    // what actually generates a miss. Settles back to level flight after.
     if (this.type === 'bomber') {
       const bc = CONFIG.missile.bomber;
-      if (this.evading) {
-        this.vy = Math.sin(this.age * bc.evadeFreq) * bc.evadeAmp;
+      if (this.breaking) {
+        // High-g S-turns: the pull REVERSES every breakFlip seconds. Raw
+        // displacement can't outrun the round, but every reversal forces it
+        // to re-point — and its turn bleed scrubs speed per radian, so a
+        // good S can drain it below self-destruct energy.
+        this.breakAge = (this.breakAge || 0) + dt;
+        if (this.breakAge >= bc.breakFlip) {
+          this.breakAge = 0;
+          this.breakDir = -this.breakDir;
+        }
+        this.vy += (bc.breakAmp * this.breakDir - this.vy) * Math.min(1, dt * bc.breakRamp);
+      } else if (this.evading) {
+        this.breakAge = 0;
+        // Phase starts at the moment evasion begins, so vy ramps from zero
+        // instead of snapping to mid-sine.
+        this.evadeAge = (this.evadeAge || 0) + dt;
+        this.vy = Math.sin(this.evadeAge * bc.evadeFreq) * bc.evadeAmp;
       } else {
+        this.evadeAge = 0;
         this.vy *= 0.9; // damp back to a level cruise
+      }
+      // Energy is conserved: total speed is capped just above cruise, so a
+      // hard pull PITCHES the flight path — horizontal speed pays for the
+      // climb — instead of adding free vertical velocity...
+      const maxSp = this.speed * bc.maxSpeedFactor;
+      const sp = Math.hypot(this.vx, this.vy);
+      if (sp > maxSp) {
+        const k = maxSp / sp;
+        this.vx *= k;
+        this.vy *= k;
+      }
+      // ...and the engines then push the run back up to cruise speed.
+      const cruise = (Math.sign(this.vx) || 1) * this.speed;
+      this.vx += (cruise - this.vx) * Math.min(1, dt * bc.thrustRecover);
+      // Hard altitude band: never into the dirt, never off the top. A pull
+      // that pins against the band flips so the escape can continue.
+      const minY = groundY * bc.bandFrac[0];
+      const maxY = groundY * bc.bandFrac[1];
+      if (this.y < minY && this.vy < 0) {
+        this.vy = 0;
+        if (this.breaking) this.breakDir = 1;
+      } else if (this.y > maxY && this.vy > 0) {
+        this.vy = 0;
+        if (this.breaking) this.breakDir = -1;
       }
     }
 
@@ -473,6 +519,37 @@ export class Interceptor {
       return this.target ? 'detonate' : 'fizzle';
     }
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Flare — a burning IR decoy punched out by a bomber under attack. It falls
+// away from the airframe and burns hot for a couple of seconds; a seduced
+// interceptor homes on it like any other target (x / y / dead is all the
+// seeker reads), then has to reacquire — or self-destruct — when it burns out.
+// ---------------------------------------------------------------------------
+export class Flare {
+  constructor(x, y, vx, vy, owner = null) {
+    this.x = x;
+    this.y = y;
+    this.vx = vx;
+    this.vy = vy;
+    this.owner = owner; // the bomber that dropped it (its pilot keeps evading
+    // while a round chases this decoy — he can't know whether it took)
+    this.age = 0;
+    this.life = CONFIG.missile.bomber.flares.life;
+    this.dead = false;
+  }
+
+  update(dt) {
+    this.age += dt;
+    // Ejected hard, then quickly dominated by gravity — it tumbles away and
+    // down while the bomber flies on, dragging the seeker off the airframe.
+    this.vx *= 0.97;
+    this.vy = this.vy * 0.97 + CONFIG.physics.gravity * 0.55 * dt;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    if (this.age >= this.life) this.dead = true;
   }
 }
 

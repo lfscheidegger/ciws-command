@@ -2,6 +2,10 @@ import { describe, it, expect } from 'bun:test';
 import { newGame, withRandom } from './helpers.js';
 import { EnemyMissile, Bullet } from '../js/entities.js';
 import { CONFIG } from '../js/config.js';
+import { STRINGS } from '../js/strings.js';
+
+// Shop rows are located by their STRINGS label, so copy edits never break tests.
+const SL = STRINGS.shop.items;
 
 describe('Game setup', () => {
   it('starts on the menu with a laid-out board', () => {
@@ -408,13 +412,13 @@ describe('Shop', () => {
     g.startGame();
     g.credits = 50;
     expect(g.interceptorWeapon.owned).toBe(false);
-    g.buyItem(find(g, 'Interceptor Battery'));
+    g.buyItem(find(g, SL.interceptor.label));
     expect(g.interceptorWeapon.owned).toBe(true);
     expect(g.credits).toBe(50 - CONFIG.shop.interceptorCost);
-    expect(find(g, 'Interceptor Battery')).toBeUndefined(); // replaced by reload row
+    expect(find(g, SL.interceptor.label)).toBeUndefined(); // replaced by reload row
     g.credits = 50;
     const cd0 = g.interceptorWeapon.cooldown;
-    g.buyItem(find(g, 'Interceptor Reload'));
+    g.buyItem(find(g, SL.interceptorReload.labelMax));
     expect(g.interceptorWeapon.cooldown).toBeLessThan(cd0);
     expect(g.credits).toBe(50 - CONFIG.shop.interceptorCooldownCosts[0]);
   });
@@ -424,11 +428,11 @@ describe('Shop', () => {
     g.startGame();
     g.credits = 1000;
     expect(g.laser.owned).toBe(false);
-    g.buyItem(find(g, 'Laser Turret'));
+    g.buyItem(find(g, SL.laser.label));
     expect(g.laser.owned).toBe(true);
-    expect(find(g, 'Laser Turret')).toBeUndefined(); // replaced by the upgrade
+    expect(find(g, SL.laser.label)).toBeUndefined(); // replaced by the upgrade
     const rt0 = g.laser.rechargeTime;
-    g.buyItem(find(g, 'Laser Recharge'));
+    g.buyItem(find(g, SL.laserRecharge.labelMax));
     expect(g.laser.rechargeTime).toBeLessThan(rt0);
   });
 
@@ -437,17 +441,17 @@ describe('Shop', () => {
     g.startGame();
     g.credits = 1000;
     const fi0 = g.ciws.fireInterval;
-    g.buyItem(find(g, 'Upgrade Fire Rate'));
+    g.buyItem(find(g, SL.fireRate.labelMax));
     expect(g.ciws.fireInterval).toBeLessThan(fi0);
 
     // Max out the interceptor reload ladder.
     g.interceptorWeapon.buy();
     for (let i = 0; i < CONFIG.shop.interceptorCooldownCosts.length; i++) {
       g.credits = 100000;
-      const item = find(g, 'Interceptor Reload');
+      const item = find(g, SL.interceptorReload.labelMax);
       if (item.cost != null) g.buyItem(item);
     }
-    const maxed = find(g, 'Interceptor Reload');
+    const maxed = find(g, SL.interceptorReload.labelMax);
     expect(maxed.cost).toBeNull();
     expect(maxed.enabled).toBe(false);
     const ladder = CONFIG.interceptor.cooldowns;
@@ -459,9 +463,9 @@ describe('Shop', () => {
     g.startGame();
     g.credits = 1000;
     expect(g.ciws.twin).toBe(false);
-    g.buyItem(find(g, 'Twin Barrels'));
+    g.buyItem(find(g, SL.twin.label));
     expect(g.ciws.twin).toBe(true);
-    const item = find(g, 'Twin Barrels');
+    const item = find(g, SL.twin.label);
     expect(item.soldOut).toBe(true);
     expect(item.cost).toBeNull();
   });
@@ -579,7 +583,7 @@ describe('Gun shield (shop upgrade ladder)', () => {
     g.credits = 300;
     const gun = g.turrets[0];
     expect(gun.shieldMax).toBe(0);
-    g.buyItem(find(g, 'Gun Shield'));
+    g.buyItem(find(g, SL.shield.label));
     expect(g.shieldLevel).toBe(1);
     expect(gun.shieldMax).toBe(1);
     expect(gun.shields).toBe(1);
@@ -590,17 +594,17 @@ describe('Gun shield (shop upgrade ladder)', () => {
     const g = newGame();
     g.startGame();
     g.credits = 100000;
-    g.buyItem(find(g, 'Gun Shield'));
+    g.buyItem(find(g, SL.shield.label));
     const rt0 = g.shieldRechargeTime();
-    g.buyItem(find(g, 'Shield Recharge'));
+    g.buyItem(find(g, SL.shieldRecharge.labelMax));
     expect(g.shieldRechargeTime()).toBeLessThan(rt0);
     for (let i = 0; i < 10; i++) {
-      const item = find(g, 'Shield Recharge');
+      const item = find(g, SL.shieldRecharge.labelMax);
       if (item.cost != null) g.buyItem(item);
     }
     const ladder = CONFIG.shield.rechargeTimes;
     expect(g.shieldRechargeTime()).toBe(ladder[ladder.length - 1]);
-    expect(find(g, 'Shield Recharge').cost).toBeNull();
+    expect(find(g, SL.shieldRecharge.labelMax).cost).toBeNull();
   });
 
   it('cities can no longer be shielded (no click-to-shield)', () => {
@@ -1139,10 +1143,14 @@ describe('Bombers & glide bombs', () => {
     expect(bomber.bombsLeft).toBeGreaterThanOrEqual(CONFIG.missile.bomber.bombs[0]);
     // Determinism: shield the gun (a bomb could kill it and end the game
     // mid-test) and armour the bomber (the auto-gun could down it before it
-    // finishes dropping, which is the behaviour under test).
+    // finishes dropping, which is the behaviour under test). Park the aim in
+    // a low corner so the stream never threatens the bomber — a threatened
+    // pilot aborts his bombing run, and this test is about an unmolested one.
     g.turrets[0].shieldMax = 99;
     g.turrets[0].shields = 99;
     bomber.hp = 99999;
+    g.mouseX = 0;
+    g.mouseY = g.groundY;
 
     const leaks0 = g.waveLeaks;
     let guard = 0;
@@ -1179,6 +1187,19 @@ describe('Bombers & glide bombs', () => {
     g.updateInterceptorLauncher(1 / 60);
     expect(g.interceptorList[0].target).toBe(bomber); // value 4 beats bomb's 1
     expect(g.laser.canTarget(bomb)).toBe(true);
+  });
+
+  it('a bomber that clears the field is gone at once — and is not a leak', () => {
+    const g = newGame();
+    g.startGame();
+    g.toSpawn = 0;
+    const bomber = new EnemyMissile(-40, 200, 1500, 200, 130, 0, 0, 'bomber');
+    bomber.x = bomber.cx = g.W + 90; // outbound, just past the right edge
+    g.missiles = [bomber];
+    const leaks0 = g.waveLeaks;
+    g.update(1 / 60);
+    expect(bomber.dead).toBe(true);
+    expect(g.waveLeaks).toBe(leaks0);
   });
 });
 
@@ -1221,6 +1242,7 @@ describe('Bomber evasion', () => {
     expect(it.target).toBe(bomber);
     it.x = bomber.x + 100; // inside evade range
     it.y = bomber.y + 100;
+    bomber.flareBursts = 0; // this test is about the jink, not the decoys
     let sawJink = false;
     for (let i = 0; i < 30; i++) {
       it.update = () => null; // freeze the threat in place

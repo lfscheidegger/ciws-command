@@ -25,7 +25,10 @@ export const CONFIG = {
     bulletDrag: 0.00035, // quadratic drag coeff for CIWS rounds — tuned so a
     // straight-up burst just barely kisses the top of the field
     missileDrag: 0.0011, // drag coeff for enemy missiles (slows them down low)
-    interceptorDrag: 0.0018, // drag coeff for coasting interceptors (bleeds energy fast)
+    // Tuned so a clean (low-turn) flight can reach the far top corners of the
+    // field before bleeding to self-destruct speed; hard maneuvering against
+    // crossing/jinking targets still scrubs enough energy to cause misses.
+    interceptorDrag: 0.0013, // drag coeff for coasting interceptors
   },
   cityCount: 6,
   turretCount: 1, // a single central CIWS — one hit on it loses the game
@@ -118,16 +121,46 @@ export const CONFIG = {
     bomber: {
       fromWave: 4,
       chance: 0.12,
-      speedFactor: 0.7, // a stately pass
+      speedFactor: 1.1, // a genuinely fast combat pass
       altFrac: [0.3, 0.45], // mid-altitude transit band (fraction of play height)
       bombs: [2, 3], // glide bombs dropped per pass
       dropGap: [1.2, 2.6], // seconds between drops
       reach: 420, // max horizontal px a dropped bomb can glide
-      // When an interceptor is inbound the pilot jinks: a vertical weave that
-      // can make a homing round overshoot and waste its energy.
-      evadeRange: 500, // starts evading when a homing interceptor is this close
-      evadeAmp: 170, // px/s of vertical jink velocity
-      evadeFreq: 4.5, // rad/s of the jink oscillation
+      // When a homing round is inbound — at the bomber OR at a flare it just
+      // dropped (the pilot can't know whether the decoy took) — the pilot
+      // weaves; when the round gets CLOSE he commits to one hard pull, which
+      // is what actually generates the miss: the displacement outruns the
+      // interceptor's turn-rate-limited correction and it overshoots.
+      // Maneuvering CONSERVES energy: total speed is capped near cruise, so
+      // a hard pull pitches the flight path (horizontal speed pays for the
+      // climb) rather than conjuring free vertical velocity. Defending also
+      // costs the mission: once forced to jink, the bombing run is ABORTED —
+      // the remaining rack never drops.
+      evadeRange: 560, // starts weaving when a homing interceptor is this close
+      evadeAmp: 150, // px/s of vertical weave velocity
+      evadeFreq: 1.6, // rad/s — slow enough that the weave really displaces
+      breakRange: 300, // the last-ditch hard pull starts at this distance
+      breakAmp: 330, // px/s the pull steers vy toward (the speed cap pitches it)
+      breakRamp: 3.5, // 1/s — how sharply vy ramps onto the pull (~4g, not a snap)
+      breakFlip: 0.6, // s — the pull reverses (a high-g S) on this cadence
+      maxSpeedFactor: 1.15, // combat-thrust ceiling on TOTAL speed while evading
+      thrustRecover: 1.5, // 1/s — engines pull vx back to cruise after a pull
+      bandFrac: [0.1, 0.72], // hard altitude band (fraction of groundY)
+      // The pilot also dodges CIWS fire: any round on a near-collision course
+      // inside this envelope sends him weaving out of the stream.
+      bulletDodge: { range: 460, missDist: 70, time: 0.9 },
+      // While evading, the pilot also punches out flares: hot decoys that can
+      // seduce an inbound interceptor's seeker off the airframe. The roll is
+      // per BURST per interceptor — keep decoyChance modest, since a typical
+      // attack run eats 1-2 bursts and a seduced round is usually a write-off.
+      flares: {
+        bursts: 3, // bursts carried per pass
+        perBurst: 3, // flares ejected per burst
+        cooldown: 1.5, // seconds between bursts
+        decoyChance: 0.3, // odds each inbound interceptor takes the bait
+        life: 1.1, // seconds a flare burns (short — seekers often reacquire)
+        ejectSpeed: 190, // px/s ejection velocity (down and back, with spread)
+      },
     },
     glidebomb: {
       speedFactor: 0.85,
@@ -203,7 +236,7 @@ export const CONFIG = {
     smokeRate: 50, // boost-phase exhaust puffs per second (white solid-motor smoke)
     // Two-phase flight, like a real missile: a powered boost then a coast.
     launchSpeed: 170, // px/s off the rail
-    boostTime: 0.55, // seconds of powered flight
+    boostTime: 0.7, // seconds of powered flight
     thrust: 1700, // px/s^2 acceleration during boost (gentler ramp)
     maxSpeed: 1060, // speed cap (outpaces fast threats, but not by much)
     turnRate: 3.8, // rad/s homing turn rate (tighter turns, can still overshoot)
@@ -318,12 +351,14 @@ export const CONFIG = {
     exposure: 1.05,
   },
 
-  // --- Explosion visuals (fireball flash + expanding shockwave ring) -------
+  // --- Explosion visuals (fireball flash + overpressure shockwave) ---------
+  // radius is the PEAK reach of the visible shockwave; for area-effect bursts
+  // the game passes an explicit radius so the wave matches the kill radius.
   explosion: {
-    small: { radius: 46, dur: 0.45 }, // bullet kill
-    medium: { radius: 80, dur: 0.6 }, // ground impact / interceptor burst
-    large: { radius: 140, dur: 0.85 }, // structure destroyed
-    nuke: { radius: 380, dur: 1.8 }, // a nuke reached the ground
+    small: { radius: 34, dur: 0.4 }, // bullet kill
+    medium: { radius: 58, dur: 0.55 }, // ground impact / interceptor burst
+    large: { radius: 105, dur: 0.8 }, // structure destroyed
+    nuke: { radius: 320, dur: 1.8 }, // a nuke reached the ground
     smokePer: { small: 4, medium: 8, large: 16, nuke: 40 }, // lingering smoke puffs
   },
 
@@ -361,6 +396,7 @@ export const CONFIG = {
     missileGlidebomb: '#cbb878',
     missileDrone: '#c9d4df',
     missileNuke: '#ff2438',
+    flare: '#ffce6e',
     missileTrail: '#ff5a4d',
     laser: '#ff4df0',
     bullet: '#ffe98a',
@@ -373,7 +409,7 @@ export const CONFIG = {
     interceptorBlast: '#9be7ff',
     lock: '#86f7ff',
     shield: '#6cf0ff',
-    explosion: '#ffb347',
+    explosion: '#ff5a4d', // standard-RV warhead pop — reads red, like the missile
     groundExplosion: '#ff5a4d',
     crosshair: '#ffe98a',
     crosshairEmpty: '#ff5a4d',

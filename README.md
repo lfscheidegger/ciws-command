@@ -39,6 +39,12 @@ laser, the economy, the shop, and win/lose conditions).
 The simulation is headless-testable because the WebGL renderer is **injected**
 into `Game` rather than imported — see the architecture note below.
 
+For hands-on testing there is also a hidden **dev console**: press `` ` ``
+(backquote) in any state. It offers god mode (cities & gun invincible) and
+endless single-threat sandboxes (loop bombers, drone swarms, nukes, etc.) for
+observing enemy and autonomous-weapon behaviour in isolation. Dev runs are
+marked with a DEV badge and never touch the high-score table.
+
 ### Controls
 
 | Input | Action |
@@ -66,14 +72,15 @@ screen at the start covers all of this in-game.
   a **reload cooldown** (6s at the start; shop upgrades buy it down to 1s);
   the pod comes back fully loaded each wave. The launcher fires
   itself at the **highest-value, most distant threat** — it never engages
-  drones (a blast can still catch one), can't see cloaked stealth, and won't
+  cheap clutter (drones and glide bombs are the laser's and gun's business,
+  though a blast can still catch one), can't see cloaked stealth, and won't
   shoot inside its minimum engagement distance. Missiles **cold-launch
   straight up** from a THAAD-style truck — guidance stays locked for the
   first ~100px of climb — then turn onto an intercept course —
-  but coasting flight **bleeds energy fast**, hard turns scrub extra speed,
+  but coasting flight **bleeds energy**, hard turns scrub extra speed,
   and a round that drops below maneuvering speed **self-destructs**: some
   intercepts genuinely run out of energy. If the target dies en route the
-  missile retasks onto the nearest non-drone threat (or self-destructs), and
+  missile retasks onto the nearest valid threat (or self-destructs), and
   it detonates with an **area blast**.
 - **Laser (shop upgrade)** — a fully autonomous beam emplacement left of the
   gun with a trainable emitter head. It picks the **lowest** drone or
@@ -151,7 +158,7 @@ Prices, amounts and earnings live in `config.economy`, `config.shop`, and
 | Evasive RV (purple) | wave 2+ | Weaves on an irregular path; 1 hit |
 | MIRV bus (green, large) | wave 3+ | Armoured (3 hits); splits into red RVs at altitude |
 | Cruise missile (gold) | wave 3+ | Enters from a screen edge at low altitude, pops up, then dives; 2 hits |
-| Bomber (bronze, Su-27 silhouette) | wave 4+ | Crosses at mid altitude dropping 2–3 **glide bombs**, and **jinks evasively** when an interceptor closes — it occasionally dodges one outright (1 hit each — yes, you can shoot down glide bombs; real ones get intercepted too). Killing the bomber pays 4 but it exits without leaking if you let it go; 3 hits |
+| Bomber (bronze, Su-27 silhouette) | wave 4+ | Crosses fast at mid altitude dropping 2–3 **glide bombs** (1 hit each — yes, you can shoot down glide bombs; real ones get intercepted too). The pilot **flies defensively**: he weaves whenever a homing round is hunting him *or his own decoy*, **punches out flare bursts** that can seduce the seeker, pulls **high-g S-breaks** when the round closes, and weaves out of incoming **CIWS streams** — all under honest energy physics (total speed stays near cruise; a pull pitches the flight path, it doesn't add free velocity). **Forcing a bomber to jink aborts its bombing run for good** — suppression is a mission kill. About 40% survive a full defensive engagement. Killing the bomber pays 4 but it exits without leaking if you let it go; 3 hits |
 | Hypersonic (orange dart) | wave 4+ | Very fast and barely slows in the dense air; 1 hit but hard to track |
 | Stealth cruise (pale, ghostly) | wave 6+ | Flies the cruise profile **cloaked** — invisible, silent, no lock-on, no laser — until its pop-up; a blind CIWS sweep can still clip it; 2 hits |
 | Nuke (crimson, huge) | wave 5+ | Announced by a klaxon and a **"Nuclear launch detected"** voice; never the first or last threat of a wave, and the per-wave cap **keeps climbing** in later waves (one at wave 5, two at 8, three at 11...). Full ballistic speed and **heavily armoured** (30 hits — a single interceptor barely dents it). Targets **inner cities** and **air-bursts** above them, leveling the target **and both neighbours** — including the CIWS if it's next door — then a mushroom cloud climbs |
@@ -197,9 +204,10 @@ fully offline.
 |------|----------------|
 | `index.html` / `style.css` | Import map + layered canvases (WebGL scene, 2D HUD) |
 | `js/config.js` | **All tunable values** — balance the game here |
+| `js/strings.js` | **All user-facing text** — menus, HUD, armory copy |
 | `js/utils.js` | Math helpers (clamp, rand, distance, array culling) |
 | `js/physics.js` | Altitude-based air-density model + quadratic drag helper |
-| `js/entities.js` | `City`, `Turret`, `Bullet`, `EnemyMissile`, `Interceptor`, `Particle` (data + update, no draw) |
+| `js/entities.js` | `City`, `Turret`, `Bullet`, `EnemyMissile`, `Interceptor`, `Flare`, `Particle` (data + update, no draw) |
 | `js/weapons.js` | `CIWSWeapon`, `InterceptorWeapon`, `LaserWeapon` — stats, upgrades, fire logic |
 | `js/scores.js` | Local high-score table (localStorage, injectable for tests) |
 | `js/audio.js` | Procedural Web Audio SFX + speech announcements (singleton `sfx`) |

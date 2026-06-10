@@ -384,6 +384,15 @@ class Sfx {
     this._tone(1508, 327, 1.3, 0.05, 'sine', 0, { pan }); // beat-frequency flutter
   }
 
+  /** Flare burst: pyrotechnic dispenser thunks, then a magnesium-bright hiss. */
+  flare(pan = 0) {
+    if (!this.ready) return;
+    const o = { pan, verb: 0.25 };
+    this._tone(220, 90, 0.07, 0.16, 'square', 0, o); // dispenser thunk
+    this._tone(240, 100, 0.07, 0.12, 'square', 0.08, o); // second round out
+    this._noise(0.9, 0.1, 'highpass', 5200, 3200, o); // burning-bright sizzle
+  }
+
   /** Laser shot: a charged zap — bright descending beam tone over a sizzle. */
   laser(pan = 0) {
     if (!this.ready) return;

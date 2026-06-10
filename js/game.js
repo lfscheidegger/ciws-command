@@ -10,6 +10,7 @@ import {
   City,
   Turret,
   EnemyMissile,
+  Flare,
   explode,
   explodeRing,
   explodeCone,
@@ -18,8 +19,25 @@ import {
 import { CIWSWeapon, InterceptorWeapon, LaserWeapon } from './weapons.js';
 import { sfx } from './audio.js';
 import { scoreboard } from './scores.js';
+import { STRINGS } from './strings.js';
 
 const C = CONFIG.colors;
+const T = STRINGS; // every user-facing line lives in strings.js
+
+// Dev-console sandbox scenarios: each loops one threat type forever. The
+// spawner fires whenever the live count drops below `maxLive` and `gap`
+// seconds have passed (a drone swarm counts one per airframe).
+export const DEV_SCENARIOS = [
+  { key: 'bombers', type: 'bomber', maxLive: 2, gap: 4 },
+  { key: 'drones', type: 'drone', maxLive: 6, gap: 5 },
+  { key: 'cruise', type: 'cruise', maxLive: 3, gap: 2.5 },
+  { key: 'stealth', type: 'stealth', maxLive: 3, gap: 2.5 },
+  { key: 'hypersonics', type: 'hypersonic', maxLive: 3, gap: 2 },
+  { key: 'evasive', type: 'evasive', maxLive: 4, gap: 1.5 },
+  { key: 'mirvs', type: 'mirv', maxLive: 3, gap: 3 },
+  { key: 'nukes', type: 'nuke', maxLive: 1, gap: 5 },
+  { key: 'rain', type: 'normal', maxLive: 6, gap: 1 },
+];
 
 export class Game {
   // The renderer is injected (not imported) so the simulation has no hard
@@ -36,6 +54,7 @@ export class Game {
     this.particles = [];
     this.explosions = []; // transient fireball/shockwave visual events
     this.interceptorList = []; // in-flight interceptors
+    this.flares = []; // burning decoys punched out by bombers under attack
     this.floatTexts = []; // floating "+credits" labels on kills
 
     // Weapon systems + economy.
@@ -80,6 +99,15 @@ export class Game {
     this.shakeTime = 0;
     this.shakeMag = 0;
 
+    // Secret dev console (backquote). Scenario sandboxes loop one threat type
+    // for observation; the toggles survive restarts so a whole test session
+    // can run invincible.
+    this.devMenuOpen = false;
+    this.devScenario = null; // entry from DEV_SCENARIOS while sandboxing
+    this.devSpawnTimer = 0;
+    this.devInvincible = false; // cities + gun cannot be destroyed
+    this.devLoadout = true; // sandbox starts with interceptor + laser fitted
+
     this.resize();
     // Default aim at the centre of the (now fixed) simulation space.
     this.mouseX = this.W / 2;
@@ -103,8 +131,16 @@ export class Game {
     this.groundY = this.H - CONFIG.groundHeight;
 
     // HUD overlay canvas is sized to the actual window (screen-space UI).
+    // The CSS size is pinned to the same innerWidth/innerHeight the drawing
+    // buffer uses: on mobile, `100vh` is the LARGE viewport (behind the
+    // collapsed URL bar) and is taller than innerHeight, which stretched the
+    // canvas and drew the crosshair below the finger.
     this.hudCanvas.width = Math.floor(this.screenW * dpr);
     this.hudCanvas.height = Math.floor(this.screenH * dpr);
+    if (this.hudCanvas.style) {
+      this.hudCanvas.style.width = `${this.screenW}px`;
+      this.hudCanvas.style.height = `${this.screenH}px`;
+    }
     this.hctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     this.renderer.setSize(this.screenW, this.screenH);
@@ -173,6 +209,7 @@ export class Game {
     this.particles = [];
     this.explosions = [];
     this.interceptorList = [];
+    this.flares = [];
     this.floatTexts = [];
     this.score = 0;
     this.credits = CONFIG.economy.startCredits;
@@ -185,9 +222,30 @@ export class Game {
     this.pendingNukes = [];
     this.mushrooms = [];
     this.paused = false; // restarting (R) always unpauses
+    this.devScenario = null; // a fresh game exits any dev sandbox
+    this.devSpawnTimer = 0;
     this.layout();
     this.renderer.syncStructures(this); // rebuild meshes for the fresh skyline
     this.startWave(1);
+  }
+
+  /**
+   * Dev sandbox: a fresh run that loops one scenario forever — no wave end,
+   * just the chosen threat respawning so its behaviour (and the autonomous
+   * weapons' response) can be watched in isolation.
+   */
+  startSandbox(scenario) {
+    this.startGame();
+    this.devScenario = scenario;
+    this.devSpawnTimer = 0;
+    this.devMenuOpen = false;
+    this.toSpawn = 0; // the sandbox spawner replaces the wave budget
+    this.wave = scenario.wave ?? 9; // past every fromWave gate
+    this.credits = 9999;
+    if (this.devLoadout) {
+      this.interceptorWeapon.buy();
+      this.laser.buy();
+    }
   }
 
   startWave(n) {
@@ -285,12 +343,16 @@ export class Game {
     if (this.state === 'intermission') this.startWave(this.nextWave);
   }
 
-  gameOver(reason = 'Defeat') {
+  gameOver(reason = T.loss.fallback) {
     this.state = 'gameover';
     this.lossReason = reason;
     this.laserBeamLive = null;
     // Bank the run on the local high-score table (no-op without storage).
-    this.lastRun = this.scoreboard.add(this.score, this.wave);
+    // Doctored runs — a dev sandbox or god mode — never touch the table.
+    this.lastRun =
+      this.devScenario || this.devInvincible
+        ? null
+        : this.scoreboard.add(this.score, this.wave);
     sfx.gameOver();
   }
 
@@ -332,7 +394,6 @@ export class Game {
   }
 
   spawnMissile() {
-    const M = CONFIG.missile;
     const { type, children } = this.chooseThreat();
 
     if (type === 'drone') {
@@ -351,7 +412,24 @@ export class Game {
       this.spawnNuke();
       return;
     }
+    this.spawnBallistic(type, children);
+  }
 
+  /** Dev sandbox: spawn one forced threat type, bypassing chooseThreat. */
+  devSpawn(type) {
+    const M = CONFIG.missile;
+    if (type === 'bomber') this.spawnBomber();
+    else if (type === 'drone') this.spawnDroneGroup();
+    else if (type === 'cruise' || type === 'stealth') this.spawnCruise(type);
+    else if (type === 'nuke') this.spawnNuke();
+    else if (type === 'mirv') {
+      this.spawnBallistic('normal', randInt(M.splitChildren[0], M.splitChildren[1]));
+    } else this.spawnBallistic(type);
+  }
+
+  /** Top-entry ballistic threat: normal / evasive / hypersonic / MIRV bus. */
+  spawnBallistic(type, children = 0) {
+    const M = CONFIG.missile;
     const startX = rand(20, this.W - 20);
     // Aim near a structure (alive OR rubble) with scatter, or — sometimes — at a
     // random ground point. Plenty land in the gaps and miss everything.
@@ -449,6 +527,66 @@ export class Game {
   }
 
   /**
+   * Is any live CIWS round on a near-collision course with this missile?
+   * Closest-approach test in relative coordinates over a short horizon.
+   */
+  bulletThreatens(m) {
+    const cfg = CONFIG.missile.bomber.bulletDodge;
+    const r2 = cfg.range * cfg.range;
+    const miss2 = cfg.missDist * cfg.missDist;
+    for (const b of this.bullets) {
+      if (b.dead) continue;
+      const rx = m.x - b.x;
+      const ry = m.y - b.y;
+      if (rx * rx + ry * ry > r2) continue;
+      const vx = b.vx - m.vx;
+      const vy = b.vy - m.vy;
+      const vv = vx * vx + vy * vy;
+      if (vv < 1) continue;
+      const t = (rx * vx + ry * vy) / vv; // time of closest approach
+      if (t < 0 || t > cfg.time) continue;
+      const cx = rx - vx * t;
+      const cy = ry - vy * t;
+      if (cx * cx + cy * cy < miss2) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Punch a burst of flares out of a bomber under attack. Each interceptor
+   * homing on that airframe rolls against decoyChance — a seduced seeker
+   * silently retargets onto one of the burning decoys, chases it as it falls
+   * away, and is left to reacquire (or self-destruct) when it gutters out.
+   */
+  dispenseFlares(bomber) {
+    const F = CONFIG.missile.bomber.flares;
+    bomber.flareBursts--;
+    bomber.flareTimer = F.cooldown;
+    const burst = [];
+    for (let i = 0; i < F.perBurst; i++) {
+      // Ejected down and behind the airframe, fanned out across the burst.
+      const back = -(Math.sign(bomber.vx) || 1);
+      const ang = Math.PI / 2 + back * rand(0.25, 0.95); // down, raked aft
+      const sp = F.ejectSpeed * rand(0.7, 1.15);
+      burst.push(
+        new Flare(
+          bomber.x,
+          bomber.y + 6,
+          bomber.vx * 0.35 + Math.cos(ang) * sp,
+          Math.sin(ang) * sp,
+          bomber
+        )
+      );
+    }
+    this.flares.push(...burst);
+    sfx.flare(this.pan(bomber.x));
+    for (const it of this.interceptorList) {
+      if (it.dead || it.target !== bomber) continue;
+      if (Math.random() < F.decoyChance) it.target = pick(burst);
+    }
+  }
+
+  /**
    * Nuke: the launch is DETECTED a few seconds before the warhead appears —
    * klaxon plus a synthetic "Nuclear launch detected" voice — then it spawns.
    */
@@ -456,7 +594,7 @@ export class Game {
     this.nukesSpawned++;
     this.pendingNukes.push(CONFIG.missile.nuke.warningTime);
     sfx.alarm(0);
-    sfx.say('Nuclear launch detected');
+    sfx.say(T.voice.nukeWarning);
   }
 
   /**
@@ -571,7 +709,7 @@ export class Game {
   }
 
   update(dt) {
-    if (this.paused) return;
+    if (this.paused || this.devMenuOpen) return; // dev console freezes the sim
     this.time += dt;
 
     for (const p of this.particles) p.update(dt);
@@ -790,8 +928,18 @@ export class Game {
       }
     }
 
-    // Spawn the wave over time.
-    if (this.toSpawn > 0) {
+    // Spawn the wave over time. A dev sandbox replaces the wave budget with
+    // an endless drip of its one scenario type.
+    if (this.devScenario) {
+      const sc = this.devScenario;
+      this.devSpawnTimer -= dt;
+      const live =
+        this.missiles.filter((m) => !m.dead).length + this.pendingNukes.length;
+      if (this.devSpawnTimer <= 0 && live < sc.maxLive) {
+        this.devSpawn(sc.type);
+        this.devSpawnTimer = sc.gap;
+      }
+    } else if (this.toSpawn > 0) {
       this.spawnTimer -= dt;
       if (this.spawnTimer <= 0) {
         this.spawnMissile();
@@ -807,31 +955,73 @@ export class Game {
       const r = m.update(dt, this.groundY);
       if (r === 'split') this.splitMissile(m);
       else if (r === 'impact') this.impact(m);
+      // A bomber that has cleared the field outbound is gone from the world
+      // immediately — it does not loiter off-screen for an interceptor to
+      // chase down. Direction-aware so it isn't culled on the way IN.
+      else if (
+        m.type === 'bomber' &&
+        ((m.vx < 0 && m.x < -80) || (m.vx > 0 && m.x > this.W + 80))
+      ) {
+        m.dead = true;
+      }
       // Insurance: anything that strays far outside the field (a side-entry
       // flyer that lost its way) dies as a leak rather than stalling the wave.
-      // A bomber finishing its pass just exits — that's not a leak.
       else if (m.age > 3 && (m.x < -400 || m.x > this.W + 400 || m.y < -500)) {
         m.dead = true;
-        if (m.type !== 'bomber') this.waveLeaks++;
+        this.waveLeaks++;
       }
     }
 
-    // Bombers: release glide bombs over the field, and break into evasive
-    // jinks while a homing interceptor is bearing down on them.
-    const evadeR2 = CONFIG.missile.bomber.evadeRange * CONFIG.missile.bomber.evadeRange;
+    // Bombers: release glide bombs over the field, and fly defensively. The
+    // pilot weaves whenever a homing round is hunting him OR one of his own
+    // flares (he can't know whether the decoy took), commits to a hard break
+    // when the round gets close, and weaves out of CIWS streams too.
+    const bc = CONFIG.missile.bomber;
     for (const m of this.missiles) {
       if (m.type !== 'bomber' || m.dead) continue;
-      m.evading = this.interceptorList.some(
-        (it) => !it.dead && it.target === m && dist2(it.x, it.y, m.x, m.y) < evadeR2
-      );
-      if (m.bombsLeft <= 0) continue;
+      // Nearest homing round bound for this airframe or one of its decoys.
+      let nearest = null;
+      let nearestD = Infinity;
+      for (const it of this.interceptorList) {
+        if (it.dead) continue;
+        if (it.target !== m && (!it.target || it.target.owner !== m)) continue;
+        const d = Math.hypot(it.x - m.x, it.y - m.y);
+        if (d < nearestD) {
+          nearestD = d;
+          nearest = it;
+        }
+      }
+      const wasBreaking = m.breaking;
+      m.breaking = nearestD < bc.breakRange;
+      if (m.breaking && !wasBreaking) {
+        // Commit the pull away from the round's approach side.
+        m.breakDir = nearest.y > m.y ? -1 : 1;
+      }
+      m.evading = nearestD < bc.evadeRange || this.bulletThreatens(m);
+      m.flareTimer -= dt;
+      if (nearestD < bc.evadeRange && m.flareBursts > 0 && m.flareTimer <= 0) {
+        this.dispenseFlares(m);
+      }
+      // Defending costs the mission: a pilot forced into the jink aborts the
+      // bombing run for good — suppressing a bomber IS a kind of kill.
+      if (m.evading) m.bombsAborted = true;
+      if (m.bombsAborted || m.bombsLeft <= 0) continue;
       m.bombTimer -= dt;
       if (m.bombTimer > 0) continue;
       if (m.x < 80 || m.x > this.W - 80) continue; // hold until over the field
       m.bombsLeft--;
-      m.bombTimer = rand(CONFIG.missile.bomber.dropGap[0], CONFIG.missile.bomber.dropGap[1]);
+      m.bombTimer = rand(bc.dropGap[0], bc.dropGap[1]);
       this.dropGlideBomb(m);
     }
+
+    // Burning flares: fall away from the bomber, sputter bright (the trail is
+    // pure particles — a hot spark plus smoke), and burn out.
+    for (const f of this.flares) {
+      f.update(dt);
+      explode(this.particles, f.x, f.y, C.flare, 1);
+      if (Math.random() < dt * 18) smokePuff(this.particles, f.x, f.y, 1, C.rocketSmoke);
+    }
+    removeWhere(this.flares, (f) => f.dead);
 
     // Shields intercept missiles at the dome before they reach the ground.
     this.checkShieldCollisions();
@@ -881,17 +1071,22 @@ export class Game {
     const aliveCities = this.cities.filter((c) => c.alive).length;
     const aliveTurrets = this.turrets.filter((t) => t.alive).length;
     if (aliveTurrets === 0) {
-      this.gameOver('Gun destroyed');
+      this.gameOver(T.loss.gunDestroyed);
       return;
     }
     if (aliveCities === 0) {
-      this.gameOver('Cities lost');
+      this.gameOver(T.loss.citiesLost);
       return;
     }
 
     // Hold a short beat after the last threat dies so the wave doesn't end
-    // jarringly the instant the final missile pops.
-    if (this.toSpawn === 0 && this.missiles.length === 0 && this.pendingNukes.length === 0) {
+    // jarringly the instant the final missile pops. A dev sandbox never ends.
+    if (
+      !this.devScenario &&
+      this.toSpawn === 0 &&
+      this.missiles.length === 0 &&
+      this.pendingNukes.length === 0
+    ) {
       this.waveEndTimer += dt;
       if (this.waveEndTimer >= CONFIG.wave.endDelay) this.endWave();
     } else {
@@ -905,13 +1100,17 @@ export class Game {
   }
 
   /**
-   * Spawn a transient explosion visual (fireball flash + shockwave ring, drawn
-   * by the renderer) plus a few lingering smoke puffs.
+   * Spawn a transient explosion visual (fireball flash + overpressure
+   * shockwave, drawn by the renderer) plus a few lingering smoke puffs.
+   * `radius` overrides the size preset so area-effect bursts can draw their
+   * wave at exactly the kill radius — the visual never oversells the weapon.
    */
-  boom(x, y, size, color) {
+  boom(x, y, size, color, radius) {
     if (this.explosions.length < CONFIG.render.maxExplosions) {
       const cfg = CONFIG.explosion[size];
-      this.explosions.push({ x, y, age: 0, dur: cfg.dur, maxR: cfg.radius, color, size });
+      this.explosions.push({
+        x, y, age: 0, dur: cfg.dur, maxR: radius ?? cfg.radius, color, size,
+      });
     }
     smokePuff(this.particles, x, y, CONFIG.explosion.smokePer[size]);
   }
@@ -1001,6 +1200,7 @@ export class Game {
     if (missile.type === 'nuke') {
       const r = CONFIG.missile.nuke.blastRadius;
       for (const s of [...this.cities, ...this.turrets]) {
+        if (this.devInvincible) break; // dev god mode: the blast is all show
         if (s.alive && Math.abs(s.x - missile.x) <= r + this.structureHalfWidth(s)) {
           s.alive = false;
           s.destroyedWave = this.wave;
@@ -1023,6 +1223,7 @@ export class Game {
     const r = CONFIG.missile.blastRadius;
     let destroyed = 0;
     for (const s of [...this.cities, ...this.turrets]) {
+      if (this.devInvincible) break; // dev god mode: structures shrug it off
       // The blast harms a structure if it overlaps its footprint at all —
       // a hit on the outermost building counts, not just dead centre.
       if (s.alive && Math.abs(s.x - missile.x) <= r + this.structureHalfWidth(s)) {
@@ -1095,7 +1296,9 @@ export class Game {
     let best = null;
     let bestScore = -Infinity;
     for (const m of this.missiles) {
-      if (m.dead || m.stealthed || m.type === 'drone') continue;
+      // Cheap clutter — drones and glide bombs — is never worth a round; the
+      // laser and the gun handle it.
+      if (m.dead || m.stealthed || m.type === 'drone' || m.type === 'glidebomb') continue;
       const d = Math.hypot(m.x - lx, m.y - ly);
       if (d < CONFIG.interceptor.minTargetDist) continue; // gun's business
       const score = this.missileBounty(m) * 2 + d / 400; // value first, then reach
@@ -1114,14 +1317,14 @@ export class Game {
 
   /**
    * Nearest live (visible) missile to a given interceptor, for retasking.
-   * Drones are never valid interceptor targets — not even mid-flight — though
-   * one caught in a blast still dies.
+   * Drones and glide bombs are never valid interceptor targets — not even
+   * mid-flight — though either caught in a blast still dies.
    */
   nearestInterceptTarget(it) {
     let best = null;
     let bestD = Infinity;
     for (const m of this.missiles) {
-      if (m.dead || m.stealthed || m.type === 'drone') continue;
+      if (m.dead || m.stealthed || m.type === 'drone' || m.type === 'glidebomb') continue;
       const d = dist2(m.x, m.y, it.x, it.y);
       if (d < bestD) {
         bestD = d;
@@ -1133,8 +1336,10 @@ export class Game {
 
   /** Area warhead burst: instakills every missile within the blast radius. */
   detonateInterceptor(it) {
-    explode(this.particles, it.x, it.y, C.interceptorBlast, 28);
-    this.boom(it.x, it.y, 'medium', C.interceptorBlast);
+    explode(this.particles, it.x, it.y, C.interceptorBlast, 22);
+    // The wave is drawn at the true blast radius, so what you see is exactly
+    // what the warhead can kill.
+    this.boom(it.x, it.y, 'medium', C.interceptorBlast, CONFIG.interceptor.blastRadius);
     this.shakeTime = Math.max(this.shakeTime, 0.18);
     this.shakeMag = 5;
     sfx.interceptorBoom(this.pan(it.x));
@@ -1186,7 +1391,9 @@ export class Game {
     this.drawHUD(ctx);
     ctx.restore();
 
-    this.drawOverlay(ctx);
+    // The dev console replaces whatever overlay would be up underneath it.
+    if (this.devMenuOpen) this.drawDevMenu(ctx);
+    else this.drawOverlay(ctx);
     // The crosshair stands in for the OS cursor, so draw it last (on top of
     // menus / the shop / game-over) in every state.
     this.drawCrosshair(ctx);
@@ -1298,6 +1505,16 @@ export class Game {
 
   drawHUD(ctx) {
     if (this.state === 'menu') return;
+    // Make it impossible to mistake a doctored run for a real one.
+    if (this.devScenario || this.devInvincible) {
+      this.text(T.dev.badge, this.screenW / 2, 20, {
+        size: 12,
+        align: 'center',
+        weight: 'bold',
+        color: C.credits,
+        glow: true,
+      });
+    }
     const cols = this.hudColumns();
     if (cols.width >= 120) this.drawSideHUD(ctx, cols);
     else this.drawCornerHUD(ctx);
@@ -1325,34 +1542,40 @@ export class Game {
     return y + 34;
   }
 
+  /** The laser status line tracks its charge state. */
+  laserHudLabel() {
+    if (this.laser.burning) return T.hud.laserFiring;
+    return this.laser.canFire ? T.hud.laserCharged : T.hud.laserCharging;
+  }
+
   /** Wide windows: stats docked in the columns flanking the play field. */
   drawSideHUD(ctx, cols) {
     const lx = cols.left / 2;
     let y = this.screenH * 0.12;
-    y = this.hudStat('SCORE', this.score, lx, y);
-    y = this.hudStat('WAVE', this.wave, lx, y);
+    y = this.hudStat(T.hud.score, this.score, lx, y);
+    y = this.hudStat(T.hud.wave, this.wave, lx, y);
     const aliveCities = this.cities.filter((c) => c.alive).length;
     y = this.hudStat(
-      'CITIES',
+      T.hud.cities,
       `${aliveCities}/${this.cities.length}`,
       lx,
       y,
       aliveCities <= 2 ? C.crosshairEmpty : C.hud
     );
     if (sfx.muted) {
-      this.text('MUTED (M)', lx, y, { size: 11, align: 'center', color: C.hudDim });
+      this.text(T.hud.muted, lx, y, { size: 11, align: 'center', color: C.hudDim });
     }
 
     const rx = (cols.right + this.screenW) / 2;
     const barW = Math.min(116, (this.screenW - cols.right) * 0.8);
     y = this.screenH * 0.12;
-    y = this.hudStat('CREDITS', this.credits, rx, y, C.credits);
+    y = this.hudStat(T.hud.credits, this.credits, rx, y, C.credits);
     const iw = this.interceptorWeapon;
     if (iw.owned) {
       const ready = iw.canLaunch;
       y = this.hudBar(
         ctx,
-        ready ? 'INTCP READY' : 'INTCP RELOADING',
+        ready ? T.hud.intcpReady : T.hud.intcpReloading,
         1 - iw.reloadFrac,
         ready,
         C.interceptor,
@@ -1363,31 +1586,26 @@ export class Game {
     }
     if (this.laser.owned) {
       const lReady = this.laser.canFire || this.laser.burning;
-      const lLabel = this.laser.burning
-        ? 'LASER FIRING'
-        : this.laser.canFire
-        ? 'LASER CHARGED'
-        : 'LASER CHARGING';
-      this.hudBar(ctx, lLabel, this.laser.chargeFrac, lReady, C.laser, rx, y, barW);
+      this.hudBar(ctx, this.laserHudLabel(), this.laser.chargeFrac, lReady, C.laser, rx, y, barW);
     }
   }
 
   /** Narrow windows: compact overlay tucked into the field's top corners. */
   drawCornerHUD(ctx) {
-    this.text(`SCORE ${this.score}`, 14, 26, { size: 15, weight: 'bold' });
-    this.text(`WAVE ${this.wave}`, 14, 46, { size: 13, color: C.hud });
+    this.text(`${T.hud.score} ${this.score}`, 14, 26, { size: 15, weight: 'bold' });
+    this.text(`${T.hud.wave} ${this.wave}`, 14, 46, { size: 13, color: C.hud });
     const aliveCities = this.cities.filter((c) => c.alive).length;
-    this.text(`CITIES ${aliveCities}/${this.cities.length}`, 14, 64, {
+    this.text(`${T.hud.cities} ${aliveCities}/${this.cities.length}`, 14, 64, {
       size: 13,
       color: aliveCities <= 2 ? C.crosshairEmpty : C.hud,
     });
-    if (sfx.muted) this.text('MUTED (M)', 14, 82, { size: 11, color: C.hudDim });
+    if (sfx.muted) this.text(T.hud.muted, 14, 82, { size: 11, color: C.hudDim });
 
     const rx = this.screenW - 14;
-    this.text(`CR ${this.credits}`, rx, 26, { size: 15, weight: 'bold', align: 'right', color: C.credits });
+    this.text(`${T.hud.creditsShort} ${this.credits}`, rx, 26, { size: 15, weight: 'bold', align: 'right', color: C.credits });
     const iw = this.interceptorWeapon;
     if (iw.owned) {
-      this.text(iw.canLaunch ? 'INTCP READY' : 'INTCP RELOADING', rx, 46, {
+      this.text(iw.canLaunch ? T.hud.intcpReady : T.hud.intcpReloading, rx, 46, {
         size: 12,
         align: 'right',
         color: iw.canLaunch ? C.interceptor : C.hudDim,
@@ -1399,12 +1617,7 @@ export class Game {
     }
     if (this.laser.owned) {
       const lOn = this.laser.canFire || this.laser.burning;
-      const lLabel = this.laser.burning
-        ? 'LASER FIRING'
-        : this.laser.canFire
-        ? 'LASER CHARGED'
-        : 'LASER CHARGING';
-      this.text(lLabel, rx, 74, { size: 12, align: 'right', color: lOn ? C.laser : C.hudDim });
+      this.text(this.laserHudLabel(), rx, 74, { size: 12, align: 'right', color: lOn ? C.laser : C.hudDim });
       ctx.fillStyle = 'rgba(255,255,255,0.12)';
       ctx.fillRect(rx - 90, 80, 90, 4);
       ctx.fillStyle = lOn ? C.laser : C.hudDim;
@@ -1421,36 +1634,28 @@ export class Game {
     const cx = this.screenW / 2;
     if (this.state === 'menu') {
       this.dim(ctx, 0.55);
-      this.text('CIWS COMMAND', cx, this.screenH * 0.16, {
+      this.text(T.title, cx, this.screenH * 0.16, {
         size: 54,
         align: 'center',
         weight: 'bold',
         color: C.turretActive,
         glow: true,
       });
-      this.text(
-        'Defend your cities with close-in weapon systems.',
-        cx,
-        this.screenH * 0.16 + 40,
-        { size: 18, align: 'center', color: C.hud }
-      );
+      this.text(T.subtitle, cx, this.screenH * 0.16 + 40, {
+        size: 18,
+        align: 'center',
+        color: C.hud,
+      });
 
-      this.text('HOW TO PLAY', cx, this.screenH * 0.3, {
+      this.text(T.howToPlayHeading, cx, this.screenH * 0.3, {
         size: 16,
         align: 'center',
         weight: 'bold',
         color: C.hud,
       });
       // Label + description rows, centred as a block.
-      const rows = [
-        ['AIM', 'Move the mouse to lay the CIWS gun. It fires on its own', 'while threats are inbound, and holds fire when the sky is clear.'],
-        ['AUTO DEFENSES', 'Interceptors (a cheap first armory buy) launch themselves at', 'distant, high-value threats; the laser burns down what gets close.'],
-        ['ARMORY', 'Between waves, spend credits on faster reloads, fire rate,', 'twin barrels, the laser, and a gun shield. Lost cities stay lost.'],
-        ['SURVIVE', 'Protect six cities. One hit on the gun ends the run —', 'only the shield dome can absorb it.'],
-        ['THREATS', 'MIRVs split, hypersonics sprint, cruise missiles and drones', 'flank, stealth decloaks late... and nukes level half the map.'],
-      ];
       let ry = this.screenH * 0.3 + 34;
-      for (const [label, ...lines] of rows) {
+      for (const [label, ...lines] of T.howToPlay) {
         this.text(label, cx - 230, ry, {
           size: 13,
           align: 'right',
@@ -1463,12 +1668,12 @@ export class Game {
         ry += lines.length * 18 + 14;
       }
 
-      this.text('P pause     R restart     M mute', cx, ry + 10, {
+      this.text(T.keysHint, cx, ry + 10, {
         size: 14,
         align: 'center',
         color: C.hudDim,
       });
-      this.text('CLICK OR PRESS SPACE TO DEPLOY', cx, this.screenH * 0.88, {
+      this.text(T.deploy, cx, this.screenH * 0.88, {
         size: 20,
         align: 'center',
         weight: 'bold',
@@ -1479,7 +1684,7 @@ export class Game {
       this.drawShop(ctx);
     } else if (this.state === 'gameover') {
       this.dim(ctx, 0.65);
-      this.text((this.lossReason || 'Defeat').toUpperCase(), cx, this.screenH * 0.18, {
+      this.text((this.lossReason || T.loss.fallback).toUpperCase(), cx, this.screenH * 0.18, {
         size: 54,
         align: 'center',
         weight: 'bold',
@@ -1488,12 +1693,12 @@ export class Game {
       });
       const isBest = this.lastRun && this.lastRun.rank === 0 && this.score > 0;
       this.text(
-        isBest ? `NEW HIGH SCORE  ${this.score}` : `Final Score  ${this.score}`,
+        isBest ? T.gameover.newHighScore(this.score) : T.gameover.finalScore(this.score),
         cx,
         this.screenH * 0.18 + 48,
         { size: 24, align: 'center', color: isBest ? C.credits : C.hud, glow: isBest }
       );
-      this.text(`You reached wave ${this.wave}`, cx, this.screenH * 0.18 + 78, {
+      this.text(T.gameover.reachedWave(this.wave), cx, this.screenH * 0.18 + 78, {
         size: 16,
         align: 'center',
         color: C.hudDim,
@@ -1503,7 +1708,7 @@ export class Game {
       const scores = this.lastRun ? this.lastRun.scores : [];
       if (scores.length) {
         const top = this.screenH * 0.36;
-        this.text('HIGH SCORES', cx, top, {
+        this.text(T.gameover.highScoresHeading, cx, top, {
           size: 16,
           align: 'center',
           weight: 'bold',
@@ -1520,12 +1725,12 @@ export class Game {
             weight: mine ? 'bold' : 'normal',
             color: col,
           });
-          this.text(`wave ${s.wave}`, cx + 20, y, { size: 13, color: col });
+          this.text(T.gameover.waveColumn(s.wave), cx + 20, y, { size: 13, color: col });
           this.text(s.date || '', cx + 170, y, { size: 12, align: 'right', color: col });
         });
       }
 
-      this.text('CLICK or press SPACE to try again', cx, this.screenH * 0.85, {
+      this.text(T.gameover.retry, cx, this.screenH * 0.85, {
         size: 20,
         align: 'center',
         weight: 'bold',
@@ -1536,14 +1741,14 @@ export class Game {
 
     if (this.paused && this.state === 'playing') {
       this.dim(ctx, 0.5);
-      this.text('PAUSED', cx, this.screenH * 0.45, {
+      this.text(T.paused, cx, this.screenH * 0.45, {
         size: 44,
         align: 'center',
         weight: 'bold',
         color: C.hud,
         glow: true,
       });
-      this.text('press P to resume', cx, this.screenH * 0.45 + 36, {
+      this.text(T.pausedHint, cx, this.screenH * 0.45 + 36, {
         size: 16,
         align: 'center',
         color: C.hudDim,
@@ -1559,131 +1764,98 @@ export class Game {
     const S = CONFIG.shop;
     const cr = this.credits;
     const iw = this.interceptorWeapon;
+    const X = T.shop.items;
     const items = [];
 
     if (!iw.owned) {
       items.push({
-        label: 'Interceptor Battery',
-        desc: 'Auto-launching homing missiles — the natural first buy',
+        label: X.interceptor.label,
+        desc: X.interceptor.desc,
         cost: S.interceptorCost,
         soldOut: false,
         enabled: cr >= S.interceptorCost,
         action: () => iw.buy(),
-        info: [
-          'Fields a THAAD-style launcher right of the',
-          'gun. It fires itself at distant, high-value',
-          'threats (never drones) and blasts everything',
-          'near the kill. Cheap — buy it early.',
-        ],
+        info: X.interceptor.info,
       });
     } else {
       const il = iw.cooldownLevel;
       const ilMax = il >= S.interceptorCooldownCosts.length;
+      const cds = CONFIG.interceptor.cooldowns;
       items.push({
-        label: `Interceptor Reload${ilMax ? '' : ` (Lv ${il + 1})`}`,
-        desc: `Faster reload between launches  (now ${iw.cooldown}s)`,
+        label: ilMax ? X.interceptorReload.labelMax : X.interceptorReload.label(il + 1),
+        desc: X.interceptorReload.desc(iw.cooldown),
         cost: ilMax ? null : S.interceptorCooldownCosts[il],
         soldOut: false,
         enabled: !ilMax && cr >= S.interceptorCooldownCosts[il],
         action: () => iw.upgradeCooldown(),
-        info: [
-          'Interceptors launch themselves at distant,',
-          'high-value threats (never drones) and blast',
-          'everything near the kill. Each level shortens',
-          `the reload between launches (${CONFIG.interceptor.cooldowns[0]}s down to ${CONFIG.interceptor.cooldowns[CONFIG.interceptor.cooldowns.length - 1]}s).`,
-        ],
+        info: X.interceptorReload.info(cds[0], cds[cds.length - 1]),
       });
     }
 
     const sl = this.shieldLevel;
     const slMax = sl >= CONFIG.shield.costs.length;
+    const rts = CONFIG.shield.rechargeTimes;
     items.push({
-      label: sl === 0 ? 'Gun Shield' : `Shield Recharge${slMax ? '' : ` (Lv ${sl})`}`,
-      desc:
+      label:
         sl === 0
-          ? 'Dome over the CIWS — absorbs one warhead, then recharges'
-          : `Faster shield recharge  (now ${this.shieldRechargeTime()}s)`,
+          ? X.shield.label
+          : slMax
+          ? X.shieldRecharge.labelMax
+          : X.shieldRecharge.label(sl),
+      desc: sl === 0 ? X.shield.desc : X.shieldRecharge.desc(this.shieldRechargeTime()),
       cost: slMax ? null : CONFIG.shield.costs[sl],
       soldOut: false,
       enabled: !slMax && cr >= CONFIG.shield.costs[sl],
       action: () => this.buyGunShield(),
-      info:
-        sl === 0
-          ? [
-              'Fits an energy dome over the CIWS that',
-              'absorbs one warhead, then recharges. A hit',
-              'on the unshielded gun instantly ends the',
-              'run — this is your only insurance.',
-            ]
-          : [
-              'Shortens how long the dome takes to come',
-              `back after absorbing a hit (down to ${CONFIG.shield.rechargeTimes[CONFIG.shield.rechargeTimes.length - 1]}s).`,
-              'It also returns fully charged each wave.',
-            ],
+      info: sl === 0 ? X.shield.info : X.shieldRecharge.info(rts[rts.length - 1]),
     });
 
     const L = CONFIG.laser;
     if (!this.laser.owned) {
       items.push({
-        label: 'Laser Turret',
-        desc: 'Autonomous beam — zaps drones & plain RVs',
+        label: X.laser.label,
+        desc: X.laser.desc,
         cost: L.cost,
         soldOut: false,
         enabled: cr >= L.cost,
         action: () => this.laser.buy(),
-        info: [
-          'An autonomous beam emplacement left of the',
-          'gun. It slews onto the lowest drone or RV in',
-          'range and burns it down — weaker at long',
-          'range, and it cannot depress below ~15°.',
-        ],
+        info: X.laser.info,
       });
     } else {
       const ll = this.laser.level;
       const llMax = ll >= L.upgradeCosts.length;
       items.push({
-        label: `Laser Recharge${llMax ? '' : ` (Lv ${ll + 1})`}`,
-        desc: `Faster recharge between shots  (now ${this.laser.rechargeTime}s)`,
+        label: llMax ? X.laserRecharge.labelMax : X.laserRecharge.label(ll + 1),
+        desc: X.laserRecharge.desc(this.laser.rechargeTime),
         cost: llMax ? null : L.upgradeCosts[ll],
         soldOut: false,
         enabled: !llMax && cr >= L.upgradeCosts[ll],
         action: () => this.laser.upgradeRecharge(),
-        info: [
-          'Shortens the recharge between laser burns',
-          `(${L.cooldowns[0]}s down to ${L.cooldowns[L.cooldowns.length - 1]}s), so it clears swarms much faster.`,
-        ],
+        info: X.laserRecharge.info(L.cooldowns[0], L.cooldowns[L.cooldowns.length - 1]),
       });
     }
 
     const fl = this.ciws.fireRateLevel;
     const frMax = fl >= S.fireRateCosts.length;
     items.push({
-      label: `Upgrade Fire Rate${frMax ? '' : ` (Lv ${fl + 1})`}`,
-      desc: 'Faster CIWS cycle rate',
+      label: frMax ? X.fireRate.labelMax : X.fireRate.label(fl + 1),
+      desc: X.fireRate.desc,
       cost: frMax ? null : S.fireRateCosts[fl],
       soldOut: false,
       enabled: !frMax && cr >= S.fireRateCosts[fl],
       action: () => this.ciws.upgradeFireRate(),
-      info: [
-        'Spins the gun faster for a denser tracer',
-        'stream — more rounds on target per sweep,',
-        'compounding with Twin Barrels.',
-      ],
+      info: X.fireRate.info,
     });
 
     const hasTwin = this.ciws.twin;
     items.push({
-      label: 'Twin Barrels',
-      desc: hasTwin ? 'Dual side-by-side cannons' : 'Add a 2nd barrel — double the rounds',
+      label: X.twin.label,
+      desc: hasTwin ? X.twin.descOwned : X.twin.desc,
       cost: hasTwin ? null : S.twinBarrelCost,
       soldOut: hasTwin,
       enabled: !hasTwin && cr >= S.twinBarrelCost,
       action: () => this.ciws.upgradeTwin(),
-      info: [
-        'One-time: mounts a second gatling cluster.',
-        'Every trigger pulse sends two rounds flying',
-        'side by side — double the stream density.',
-      ],
+      info: X.twin.info,
     });
 
     return items;
@@ -1754,6 +1926,24 @@ export class Game {
     return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
   }
 
+  /** Greedy word-wrap using real text metrics at the given font size. */
+  _wrapText(ctx, str, maxW, size) {
+    ctx.font = `normal ${size}px "Courier New", monospace`;
+    const lines = [];
+    let line = '';
+    for (const word of str.split(/\s+/)) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (line && ctx.measureText(candidate).width > maxW) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = candidate;
+      }
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
   _roundRect(ctx, x, y, w, h, r) {
     ctx.beginPath();
     ctx.moveTo(x + r, y);
@@ -1767,25 +1957,24 @@ export class Game {
   drawShop(ctx) {
     const cx = this.screenW / 2;
     this.dim(ctx, 0.6);
-    this.text(`WAVE ${this.wave} CLEARED`, cx, this.screenH * 0.15, {
+    this.text(T.shop.waveCleared(this.wave), cx, this.screenH * 0.15, {
       size: 38,
       align: 'center',
       weight: 'bold',
       color: C.city,
       glow: true,
     });
-    this.text(
-      `CREDITS  ${this.credits}    (+${this.waveEarned} this wave)`,
-      cx,
-      this.screenH * 0.15 + 34,
-      { size: 18, align: 'center', color: C.credits }
-    );
+    this.text(T.shop.creditsLine(this.credits, this.waveEarned), cx, this.screenH * 0.15 + 34, {
+      size: 18,
+      align: 'center',
+      color: C.credits,
+    });
     const b = this.waveBreakdown;
     if (b) {
       const parts = [
-        `Kills +${b.kills}`,
-        b.clear > 0 ? `All-clear +${b.clear}` : 'All-clear —',
-        `Cities +${b.city}`,
+        T.shop.breakdownKills(b.kills),
+        b.clear > 0 ? T.shop.breakdownClear(b.clear) : T.shop.breakdownClearMissed,
+        T.shop.breakdownCities(b.city),
       ];
       this.text(parts.join('     '), cx, this.screenH * 0.15 + 58, {
         size: 13,
@@ -1793,7 +1982,7 @@ export class Game {
         color: C.hudDim,
       });
     }
-    this.text('ARMORY — click an item or press its number', cx, this.screenH * 0.3 - 16, {
+    this.text(T.shop.heading, cx, this.screenH * 0.3 - 16, {
       size: 13,
       align: 'center',
       color: C.hudDim,
@@ -1821,9 +2010,9 @@ export class Game {
       this.text(it.desc, r.x + 40, r.y + 38, { size: 12, color: C.hudDim });
 
       let right;
-      if (it.cost == null) right = 'MAX';
-      else if (it.soldOut) right = '—';
-      else right = `${it.cost} cr`;
+      if (it.cost == null) right = T.shop.maxedOut;
+      else if (it.soldOut) right = T.shop.soldOut;
+      else right = T.shop.price(it.cost);
       this.text(right, r.x + r.w - 16, r.y + r.h / 2 + 5, {
         size: 16,
         align: 'right',
@@ -1833,10 +2022,11 @@ export class Game {
 
     // Hover tooltip: a side panel with the full explanation of the item
     // under the cursor (hovering works whether or not you can afford it).
+    // The info text is a single paragraph, word-wrapped to the box width.
     const hovered = rows.find((r) => this._inRect(this.pointerX, this.pointerY, r));
     if (hovered && hovered.item.info) {
-      const lines = hovered.item.info;
       const tw = 318;
+      const lines = this._wrapText(ctx, hovered.item.info, tw - 24, 12.5);
       const th = lines.length * 17 + 22;
       // Prefer the right side of the panel, then the left; on narrow windows
       // fall back to a strip tucked under the hovered row.
@@ -1865,17 +2055,122 @@ export class Game {
     ctx.fillStyle = hoverN ? 'rgba(255,179,71,0.9)' : 'rgba(255,179,71,0.55)';
     this._roundRect(ctx, nr.x, nr.y, nr.w, nr.h, 6);
     ctx.fill();
-    this.text('NEXT WAVE ▸', cx, nr.y + nr.h / 2 + 6, {
+    this.text(T.shop.nextWave, cx, nr.y + nr.h / 2 + 6, {
       size: 18,
       align: 'center',
       weight: 'bold',
       color: '#161008',
     });
-    this.text('or press SPACE', cx, nr.y + nr.h + 18, {
+    this.text(T.shop.nextWaveHint, cx, nr.y + nr.h + 18, {
       size: 12,
       align: 'center',
       color: C.hudDim,
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Secret dev console (backquote) — scenario sandboxes + god-mode toggles.
+  // -------------------------------------------------------------------------
+  devMenuItems() {
+    const D = T.dev;
+    const items = [
+      {
+        hotkey: 'g',
+        label: D.godMode,
+        value: this.devInvincible ? D.on : D.off,
+        action: () => (this.devInvincible = !this.devInvincible),
+      },
+      {
+        hotkey: 'l',
+        label: D.loadout,
+        value: this.devLoadout ? D.on : D.off,
+        action: () => (this.devLoadout = !this.devLoadout),
+      },
+    ];
+    DEV_SCENARIOS.forEach((sc, i) => {
+      items.push({
+        hotkey: `${i + 1}`,
+        label: D.scenarios[sc.key],
+        active: this.devScenario === sc,
+        action: () => this.startSandbox(sc),
+      });
+    });
+    if (this.devScenario) {
+      items.push({
+        hotkey: 'x',
+        label: D.exitSandbox,
+        action: () => {
+          this.devScenario = null;
+          this.devMenuOpen = false;
+          this.state = 'menu';
+        },
+      });
+    }
+    return items;
+  }
+
+  devMenuLayout() {
+    const items = this.devMenuItems();
+    const panelW = Math.min(560, this.screenW - 24);
+    const x = this.screenW / 2 - panelW / 2;
+    const rowH = 36;
+    const gap = 6;
+    let y = this.screenH * 0.2;
+    const rows = items.map((item, i) => {
+      if (i === 2) y += 28; // room for the scenarios heading
+      const r = { item, x, y, w: panelW, h: rowH };
+      y += rowH + gap;
+      return r;
+    });
+    return { rows };
+  }
+
+  drawDevMenu(ctx) {
+    const cx = this.screenW / 2;
+    this.dim(ctx, 0.72);
+    this.text(T.dev.title, cx, this.screenH * 0.1, {
+      size: 32,
+      align: 'center',
+      weight: 'bold',
+      color: C.credits,
+      glow: true,
+    });
+    this.text(T.dev.hint, cx, this.screenH * 0.1 + 26, {
+      size: 13,
+      align: 'center',
+      color: C.hudDim,
+    });
+
+    const { rows } = this.devMenuLayout();
+    rows.forEach((r, i) => {
+      if (i === 2) {
+        this.text(T.dev.scenariosHeading, r.x, r.y - 10, { size: 12, color: C.hudDim });
+      }
+      const hover = this._inRect(this.pointerX, this.pointerY, r);
+      ctx.fillStyle = r.item.active ? 'rgba(255,216,107,0.25)' : hover ? C.shopRowHover : C.shopRow;
+      this._roundRect(ctx, r.x, r.y, r.w, r.h, 6);
+      ctx.fill();
+      this.text(r.item.hotkey.toUpperCase(), r.x + 18, r.y + r.h / 2 + 5, {
+        size: 14,
+        align: 'center',
+        color: C.crosshair,
+      });
+      this.text(r.item.label, r.x + 40, r.y + r.h / 2 + 5, { size: 14, color: C.hud });
+      if (r.item.value) {
+        this.text(r.item.value, r.x + r.w - 16, r.y + r.h / 2 + 5, {
+          size: 14,
+          align: 'right',
+          weight: 'bold',
+          color: r.item.value === T.dev.on ? C.credits : C.hudDim,
+        });
+      }
+    });
+  }
+
+  handleDevClick(px, py) {
+    const { rows } = this.devMenuLayout();
+    const r = rows.find((r) => this._inRect(px, py, r));
+    if (r) r.item.action();
   }
 
   // -------------------------------------------------------------------------
@@ -1896,6 +2191,10 @@ export class Game {
       sfx.unlock();
       setPointer(e);
       if (e.button !== 0) return;
+      if (this.devMenuOpen) {
+        this.handleDevClick(this.pointerX, this.pointerY);
+        return;
+      }
       // In play both weapons run themselves — clicks only drive the menus.
       if (this.state === 'menu' || this.state === 'gameover') {
         this.handleMenuClick();
@@ -1913,6 +2212,12 @@ export class Game {
     });
 
     window.addEventListener('resize', () => this.resize());
+    // Mobile browsers resize the visual viewport (URL bar collapse, rotation)
+    // without always firing a window resize — track it so the canvases never
+    // drift out of alignment with the touch coordinates.
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => this.resize());
+    }
   }
 
   /**
@@ -1920,6 +2225,21 @@ export class Game {
    * menu/game-over, advance in the shop.
    */
   handleKey(key) {
+    // Secret dev console: backquote toggles it from any state; while it is
+    // up it swallows every key so hotkeys can't leak into the game below.
+    if (key === '`') {
+      this.devMenuOpen = !this.devMenuOpen;
+      return;
+    }
+    if (this.devMenuOpen) {
+      if (key === 'escape') {
+        this.devMenuOpen = false;
+        return;
+      }
+      const item = this.devMenuItems().find((i) => i.hotkey === key);
+      if (item) item.action();
+      return;
+    }
     if (key === ' ' || key === 'spacebar') {
       if (this.state === 'menu' || this.state === 'gameover') this.startGame();
       else if (this.state === 'intermission') this.proceedToNextWave();

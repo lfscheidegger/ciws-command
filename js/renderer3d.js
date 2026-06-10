@@ -356,7 +356,9 @@ export class Renderer {
     this._buildMissileMeshes();
     this._buildSideEntrantMeshes();
     this.missileTrailSys = this._makeLines(R.maxMissiles * CONFIG.missile.trailMaxPoints * 3);
-    this.bulletSys = this._makeLines(R.maxBullets);
+    // 2 segments per tracer: GL lines are stuck at 1px, so each round is
+    // drawn as a parallel pair straddling its true path for a ~2px tracer.
+    this.bulletSys = this._makeLines(R.maxBullets * 2);
     this._buildInterceptorMeshes();
     this.interceptorTrailSys = this._makeLines(
       R.maxInterceptors * CONFIG.interceptor.trailMaxPoints
@@ -418,11 +420,43 @@ export class Renderer {
 
   /**
    * Pooled explosion visuals: each slot is a billboard fireball flash (sprite)
-   * plus an expanding shockwave ring on the action plane. The game pushes
-   * short-lived {x, y, age, dur, maxR, color} events; we animate them here.
+   * plus a shader-driven overpressure shockwave on the action plane. The game
+   * pushes short-lived {x, y, age, dur, maxR, color} events; we animate them.
    */
   _buildExplosionPool() {
-    this._ringGeo = new THREE.RingGeometry(0.86, 1.0, 48);
+    // Unit quad: the ripple travels INSIDE it via the shader's uProg, so the
+    // mesh itself never rescales mid-burst — the wavefront just races out,
+    // thinning and softening like a real over-pressure wave.
+    this._shockGeo = new THREE.PlaneGeometry(2, 2);
+    const shockVert = `
+      varying vec2 vP;
+      void main() {
+        vP = position.xy;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`;
+    const shockFrag = `
+      uniform float uProg;  // wavefront position, 0..1 of the blast radius
+      uniform float uFade;  // overall envelope, 1 -> 0 over the burst
+      uniform vec3 uColor;  // kill-type tint (applied lightly)
+      varying vec2 vP;
+      void main() {
+        float r = length(vP);
+        // Compression front: a thin gaussian band that widens and softens as
+        // it travels outward.
+        float w = 0.06 + 0.13 * uProg;
+        float d = (r - uProg) / w;
+        float front = exp(-d * d);
+        // Faint trailing ripple — the reflected/secondary pulse.
+        float d2 = (r - uProg * 0.6) / (w * 2.2);
+        float trail = exp(-d2 * d2) * 0.28;
+        // Interior heat-haze that empties out behind the wave.
+        float haze = smoothstep(uProg, uProg * 0.15, r) * 0.12 * (1.0 - uProg);
+        float a = (front + trail + haze) * uFade * step(r, 1.0);
+        // Clearly tinted by the kill color, with a white-hot leading edge so
+        // it still reads as a pressure wave rather than flat pigment.
+        vec3 col = mix(uColor, vec3(1.0), front * 0.45);
+        gl_FragColor = vec4(col * a, a);
+      }`;
     this.explosionPool = [];
     for (let i = 0; i < R.maxExplosions; i++) {
       const flashMat = new THREE.SpriteMaterial({
@@ -438,17 +472,24 @@ export class Renderer {
       coreMat.color.set(0xffffff);
       const core = new THREE.Sprite(coreMat);
       core.visible = false;
-      const ringMat = new THREE.MeshBasicMaterial({
+      const shockMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uProg: { value: 0 },
+          uFade: { value: 0 },
+          uColor: { value: new THREE.Color(1, 1, 1) },
+        },
+        vertexShader: shockVert,
+        fragmentShader: shockFrag,
         transparent: true,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
       });
-      const ring = new THREE.Mesh(this._ringGeo, ringMat);
-      ring.visible = false;
-      ring.frustumCulled = false;
-      this.scene.add(flash, core, ring);
-      this.explosionPool.push({ flash, flashMat, core, coreMat, ring, ringMat });
+      const shock = new THREE.Mesh(this._shockGeo, shockMat);
+      shock.visible = false;
+      shock.frustumCulled = false;
+      this.scene.add(flash, core, shock);
+      this.explosionPool.push({ flash, flashMat, core, coreMat, shock, shockMat });
     }
   }
 
@@ -465,7 +506,7 @@ export class Renderer {
       const c = this.baseColor(e.color);
 
       // Fireball: balloons quickly, tinted toward hot orange, fades as it grows.
-      const flashR = e.maxR * (0.45 + 0.75 * ease);
+      const flashR = e.maxR * (0.4 + 0.5 * ease);
       slot.flash.visible = true;
       slot.flash.position.set(x, y, 4);
       slot.flash.scale.set(flashR * 2, flashR * 2, 1);
@@ -481,17 +522,18 @@ export class Renderer {
         slot.coreMat.opacity = Math.pow(1 - k / 0.3, 2) * 0.85;
       }
 
-      // Shockwave ring races out ahead of the fireball and thins away.
-      const ringR = Math.max(1, e.maxR * 1.5 * ease);
-      slot.ring.visible = true;
-      slot.ring.position.set(x, y, 3);
-      slot.ring.scale.set(ringR, ringR, 1);
-      slot.ringMat.color.copy(c);
-      slot.ringMat.opacity = 0.6 * (1 - k);
+      // Overpressure wave: the quad spans the blast radius exactly; the
+      // ripple's wavefront travels through it via uProg and peaks at maxR.
+      slot.shock.visible = true;
+      slot.shock.position.set(x, y, 3);
+      slot.shock.scale.set(e.maxR, e.maxR, 1);
+      slot.shockMat.uniforms.uProg.value = ease;
+      slot.shockMat.uniforms.uFade.value = Math.pow(1 - k, 1.1) * 0.9;
+      slot.shockMat.uniforms.uColor.value.copy(c);
     }
     for (; i < this.explosionPool.length; i++) {
       const slot = this.explosionPool[i];
-      slot.flash.visible = slot.core.visible = slot.ring.visible = false;
+      slot.flash.visible = slot.core.visible = slot.shock.visible = false;
     }
   }
 
@@ -1399,21 +1441,30 @@ export class Renderer {
     const inv = CONFIG.bullet.tracerLength / CONFIG.bullet.speed;
     let seg = 0;
     for (const b of game.bullets) {
-      if (seg >= sys.maxSeg) break;
-      const v = seg * 6;
-      sys.pos[v] = this.wx(b.x);
-      sys.pos[v + 1] = this.wy(b.y);
-      sys.pos[v + 2] = 0;
-      sys.pos[v + 3] = this.wx(b.x - b.vx * inv);
-      sys.pos[v + 4] = this.wy(b.y - b.vy * inv);
-      sys.pos[v + 5] = 0;
-      sys.col[v] = c.r;
-      sys.col[v + 1] = c.g;
-      sys.col[v + 2] = c.b;
-      sys.col[v + 3] = c.r * 0.2;
-      sys.col[v + 4] = c.g * 0.2;
-      sys.col[v + 5] = c.b * 0.2;
-      seg++;
+      if (seg + 2 > sys.maxSeg) break;
+      // Two parallel 1px lines straddling the true path read as one ~2px
+      // tracer (offset is perpendicular to the velocity, in sim units).
+      const sp = Math.hypot(b.vx, b.vy) || 1;
+      const px = (-b.vy / sp) * 0.5;
+      const py = (b.vx / sp) * 0.5;
+      const tx = b.x - b.vx * inv;
+      const ty = b.y - b.vy * inv;
+      for (let side = -1; side <= 1; side += 2) {
+        const v = seg * 6;
+        sys.pos[v] = this.wx(b.x + px * side);
+        sys.pos[v + 1] = this.wy(b.y + py * side);
+        sys.pos[v + 2] = 0;
+        sys.pos[v + 3] = this.wx(tx + px * side);
+        sys.pos[v + 4] = this.wy(ty + py * side);
+        sys.pos[v + 5] = 0;
+        sys.col[v] = c.r;
+        sys.col[v + 1] = c.g;
+        sys.col[v + 2] = c.b;
+        sys.col[v + 3] = c.r * 0.2;
+        sys.col[v + 4] = c.g * 0.2;
+        sys.col[v + 5] = c.b * 0.2;
+        seg++;
+      }
     }
     sys.setCount(seg);
   }
@@ -1422,7 +1473,10 @@ export class Renderer {
   setSize(w, h) {
     this.clientW = w;
     this.clientH = h;
-    this.three.setSize(w, h, false);
+    // updateStyle=true pins the canvas CSS size to the same innerWidth/Height
+    // the projection math uses — relying on `100vh` stretches the scene on
+    // mobile, where the large viewport is taller than the visible one.
+    this.three.setSize(w, h, true);
     this.composer.setSize(w, h);
     if (this.bloom) this.bloom.setSize(w, h);
     this.camera.aspect = w / h;
