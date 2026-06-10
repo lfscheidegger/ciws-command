@@ -394,7 +394,7 @@ describe('Shop', () => {
     g.startGame();
     g.credits = 0;
     const items = g.getShopItems();
-    expect(items).toHaveLength(6); // intcp reload, repair, shield, laser, fire rate, twin
+    expect(items).toHaveLength(5); // intcp, shield, laser, fire rate, twin
     const upgrade = items[0];
     expect(upgrade.enabled).toBe(false); // can't afford
     const cd0 = g.interceptorWeapon.cooldown;
@@ -430,17 +430,6 @@ describe('Shop', () => {
     const rt0 = g.laser.rechargeTime;
     g.buyItem(find(g, 'Laser Recharge'));
     expect(g.laser.rechargeTime).toBeLessThan(rt0);
-  });
-
-  it('repairs a city only when one is destroyed', () => {
-    const g = newGame();
-    g.startGame();
-    g.credits = 200;
-    expect(find(g, 'Repair City').enabled).toBe(false); // all intact
-    g.cities[0].alive = false;
-    g.buyItem(find(g, 'Repair City'));
-    expect(g.cities[0].alive).toBe(true);
-    expect(g.credits).toBe(200 - CONFIG.shop.repairCityCost);
   });
 
   it('upgrades fire rate, and reload caps at MAX', () => {
@@ -883,20 +872,25 @@ describe('New threats', () => {
     }
   });
 
-  it('caps at one nuke per wave, two from the late waves on', () => {
+  it('the nuke cap keeps climbing with the waves', () => {
     const g = newGame();
     g.startGame();
     g.waveSpawnTotal = 30;
     g.toSpawn = 15; // mid-wave so the order gate passes
+    const N = CONFIG.missile.nuke;
 
-    g.wave = CONFIG.missile.nuke.fromWave;
-    g.nukesSpawned = CONFIG.missile.nuke.maxPerWave;
+    g.wave = N.fromWave;
+    g.nukesSpawned = N.maxPerWave; // cap reached at the unlock wave
     for (let i = 0; i < 200; i++) expect(g.chooseThreat().type).not.toBe('nuke');
 
-    g.wave = CONFIG.missile.nuke.twoFromWave;
-    expect(withRandom(0, () => g.chooseThreat().type)).toBe('nuke'); // a 2nd is allowed
+    g.wave = N.fromWave + N.wavesPerExtra; // cap is now 2
+    expect(withRandom(0, () => g.chooseThreat().type)).toBe('nuke');
     g.nukesSpawned = 2;
     for (let i = 0; i < 200; i++) expect(g.chooseThreat().type).not.toBe('nuke');
+
+    g.wave = N.fromWave + 3 * N.wavesPerExtra; // cap is now 4
+    g.nukesSpawned = 3;
+    expect(withRandom(0, () => g.chooseThreat().type)).toBe('nuke');
   });
 });
 
@@ -1143,10 +1137,12 @@ describe('Bombers & glide bombs', () => {
     expect(bomber.type).toBe('bomber');
     expect(Math.abs(bomber.vy)).toBeLessThan(1e-9); // level flight
     expect(bomber.bombsLeft).toBeGreaterThanOrEqual(CONFIG.missile.bomber.bombs[0]);
-    // Its bombs may target the gun; shield it so a lucky hit can't end the
-    // game (and freeze the bomber) mid-test.
+    // Determinism: shield the gun (a bomb could kill it and end the game
+    // mid-test) and armour the bomber (the auto-gun could down it before it
+    // finishes dropping, which is the behaviour under test).
     g.turrets[0].shieldMax = 99;
     g.turrets[0].shields = 99;
+    bomber.hp = 99999;
 
     const leaks0 = g.waveLeaks;
     let guard = 0;

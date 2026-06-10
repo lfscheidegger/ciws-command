@@ -197,11 +197,15 @@ describe('Interceptor', () => {
     expect(Math.hypot(coast.vx, coast.vy)).toBeLessThan(before);
   });
 
-  it('homes toward its target', () => {
+  it('climbs straight up first, then homes toward its target', () => {
     const target = { x: 200, y: G, dead: false };
     const it = new Interceptor(700, G, target);
-    for (let i = 0; i < 10; i++) it.update(1 / 60, G);
-    expect(it.x).toBeLessThan(700); // moved left toward the target
+    while (it.launchY - it.y < CONFIG.interceptor.steerAfterClimb) {
+      it.update(1 / 60, G);
+      expect(it.x).toBe(700); // guidance locked during the launch climb
+    }
+    for (let i = 0; i < 40; i++) it.update(1 / 60, G);
+    expect(it.x).toBeLessThan(700); // now turning out toward the target
   });
 
   it('detonates within range of the target', () => {
@@ -214,6 +218,7 @@ describe('Interceptor', () => {
   it('turning during coast scrubs extra speed (maneuvering costs energy)', () => {
     const behind = { x: 0, y: 800, dead: false };
     const turner = new Interceptor(700, 800, behind);
+    turner.launchY = 2000; // well past the launch climb: free to steer
     turner.age = CONFIG.interceptor.boostTime + 1; // coasting
     turner.vx = 800;
     turner.vy = 0; // flying away from the target: max-rate turn required
@@ -221,6 +226,7 @@ describe('Interceptor', () => {
 
     const ahead = { x: 5000, y: 800, dead: false };
     const straight = new Interceptor(700, 800, ahead);
+    straight.launchY = 2000;
     straight.age = CONFIG.interceptor.boostTime + 1;
     straight.vx = 800;
     straight.vy = 0; // already aligned: no turn

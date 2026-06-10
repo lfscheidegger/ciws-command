@@ -388,6 +388,7 @@ export class Interceptor {
     // intercept course in flight (low, far targets cost real turning time).
     this.vx = 0;
     this.vy = -cfg.launchSpeed;
+    this.launchY = y; // steering is locked until it clears the launch column
     this.life = cfg.lifetime;
     this.dead = false;
     this.trail = [{ x, y }];
@@ -400,9 +401,12 @@ export class Interceptor {
     if (this.target && this.target.dead) this.target = null;
 
     // Steer the velocity heading toward the target, capped by the turn rate.
+    // The round flies STRAIGHT UP for its first stretch of climb (clearing
+    // the launch column, like a real cold launch) before guidance kicks in.
+    const canSteer = this.launchY - this.y >= cfg.steerAfterClimb;
     let dirX = this.vx;
     let dirY = this.vy;
-    if (this.target) {
+    if (this.target && canSteer) {
       dirX = this.target.x - this.x;
       dirY = this.target.y - this.y;
     }

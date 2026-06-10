@@ -68,7 +68,8 @@ screen at the start covers all of this in-game.
   itself at the **highest-value, most distant threat** — it never engages
   drones (a blast can still catch one), can't see cloaked stealth, and won't
   shoot inside its minimum engagement distance. Missiles **cold-launch
-  straight up** from a THAAD-style truck, then turn onto an intercept course —
+  straight up** from a THAAD-style truck — guidance stays locked for the
+  first ~100px of climb — then turn onto an intercept course —
   but coasting flight **bleeds energy fast**, hard turns scrub extra speed,
   and a round that drops below maneuvering speed **self-destructs**: some
   intercepts genuinely run out of energy. If the target dies en route the
@@ -101,7 +102,6 @@ Space to continue. Every ladder runs deep enough to soak late-game credits:
 | Item | Effect |
 |------|--------|
 | Interceptor Battery / Reload | Field the auto-launcher (cheap!), then shorten its cooldown, 6s → 1s (multi-level) |
-| Repair City | Rebuild one destroyed city (expensive) |
 | Gun Shield / Shield Recharge | Fit a dome on the CIWS that absorbs one warhead, then buy down its recharge (multi-level) |
 | Laser Turret / Laser Recharge | Buy the autonomous beam, then speed its recharge (multi-level) |
 | Upgrade Fire Rate | Faster CIWS cycle rate (multi-level) |
@@ -114,7 +114,8 @@ upgradable down to ~2.5s via Shield Recharge levels). Cities can't be
 shielded; the dome is how you survive a hit that would otherwise instantly end
 the run.
 
-Repairs are deliberately costly, so losing a city is a real setback.
+There are **no city repairs** — a lost city is gone for the run, taking its
+end-of-wave income with it.
 
 Prices, amounts and earnings live in `config.economy`, `config.shop`, and
 `config.shield`.
@@ -146,14 +147,14 @@ Prices, amounts and earnings live in `config.economy`, `config.shop`, and
 | Threat | Appears | Behaviour |
 |--------|---------|-----------|
 | Standard RV (red) | wave 1+ | Straight dive toward a structure; 1 hit |
-| Drone swarm (gray, squat) | wave 2+ | Four slow gliders from one screen edge (counts as one wave slot), each with its own target; 1 hit each |
+| Drone swarm (gray, squat) | wave 2+ | Five low gliders from one screen edge (counts as one wave slot), each with its own target; 1 hit each |
 | Evasive RV (purple) | wave 2+ | Weaves on an irregular path; 1 hit |
 | MIRV bus (green, large) | wave 3+ | Armoured (3 hits); splits into red RVs at altitude |
 | Cruise missile (gold) | wave 3+ | Enters from a screen edge at low altitude, pops up, then dives; 2 hits |
 | Bomber (bronze, Su-27 silhouette) | wave 4+ | Crosses at mid altitude dropping 2–3 **glide bombs**, and **jinks evasively** when an interceptor closes — it occasionally dodges one outright (1 hit each — yes, you can shoot down glide bombs; real ones get intercepted too). Killing the bomber pays 4 but it exits without leaking if you let it go; 3 hits |
 | Hypersonic (orange dart) | wave 4+ | Very fast and barely slows in the dense air; 1 hit but hard to track |
 | Stealth cruise (pale, ghostly) | wave 6+ | Flies the cruise profile **cloaked** — invisible, silent, no lock-on, no laser — until its pop-up; a blind CIWS sweep can still clip it; 2 hits |
-| Nuke (crimson, huge) | wave 5+ | Announced by a klaxon and a **"Nuclear launch detected"** voice; never the first or last threat of a wave (two possible in late waves). Full ballistic speed and **heavily armoured** (20 hits — a single interceptor barely dents it). Targets **inner cities** and **air-bursts** above them, leveling the target **and both neighbours** — including the CIWS if it's next door — then a mushroom cloud climbs |
+| Nuke (crimson, huge) | wave 5+ | Announced by a klaxon and a **"Nuclear launch detected"** voice; never the first or last threat of a wave, and the per-wave cap **keeps climbing** in later waves (one at wave 5, two at 8, three at 11...). Full ballistic speed and **heavily armoured** (30 hits — a single interceptor barely dents it). Targets **inner cities** and **air-bursts** above them, leveling the target **and both neighbours** — including the CIWS if it's next door — then a mushroom cloud climbs |
 
 A non-killing hit on the armoured MIRV flashes it white with a metallic ting —
 chip it down with the gun, or pop the whole bus with one interceptor before it

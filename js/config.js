@@ -78,7 +78,7 @@ export const CONFIG = {
       drone: 1,
       bomber: 3,
       glidebomb: 1,
-      nuke: 20,
+      nuke: 30,
     },
     hitFlashTime: 0.12, // seconds the body flashes white on a non-killing hit
 
@@ -148,8 +148,8 @@ export const CONFIG = {
       fromWave: 2,
       chance: 0.1,
       speedFactor: 0.55,
-      groupSize: 4,
-      altFrac: [0.3, 0.6], // per-drone spawn altitude band
+      groupSize: 5,
+      altFrac: [0.5, 0.75], // per-drone spawn altitude band (low entry)
       diveDist: 200, // horizontal px before the target where the dive starts
       turnRate: 2.0,
     },
@@ -160,8 +160,10 @@ export const CONFIG = {
     nuke: {
       fromWave: 5,
       chance: 0.07,
+      // Cap = maxPerWave at fromWave, +1 every wavesPerExtra after that — it
+      // keeps climbing forever (wave 5: one, wave 8: two, wave 11: three...).
       maxPerWave: 1,
-      twoFromWave: 8, // from this wave on, two can come in a single round
+      wavesPerExtra: 3,
       speedFactor: 1.0, // comes in at full ballistic speed
       scale: 2.4, // visual size multiplier
       warningTime: 3, // seconds between the launch warning and it appearing
@@ -205,6 +207,7 @@ export const CONFIG = {
     thrust: 1700, // px/s^2 acceleration during boost (gentler ramp)
     maxSpeed: 1060, // speed cap (outpaces fast threats, but not by much)
     turnRate: 3.8, // rad/s homing turn rate (tighter turns, can still overshoot)
+    steerAfterClimb: 100, // px of straight vertical climb before it may steer
     turnBleed: 0.45, // fraction of speed scrubbed per radian of post-boost turning
     minSpeed: 240, // below this it lacks maneuvering energy and self-destructs
     detonateRadius: 24, // must pass this close to detonate (tighter => can miss)
@@ -218,8 +221,8 @@ export const CONFIG = {
 
   // --- Laser (purchasable autonomous point-defense beam) ------------------
   laser: {
-    cost: 70, // one-time purchase
-    upgradeCosts: [40, 65, 95, 140, 200], // recharge upgrades after it's owned
+    cost: 85, // one-time purchase
+    upgradeCosts: [50, 80, 115, 170, 240], // recharge upgrades after it's owned
     cooldowns: [6, 4.5, 3.2, 2.2, 1.5, 1], // recharge between burns, by upgrade level
     dps: 2.6, // HP/s burned at point-blank; falls off with distance
     fullPowerDist: 280, // beam burns at full dps inside this distance
@@ -238,7 +241,7 @@ export const CONFIG = {
   // --- Gun shield (a shop upgrade ladder; cities can't be shielded) -------
   shield: {
     // First purchase fits the dome on the CIWS; later ones speed its recharge.
-    costs: [55, 35, 55, 80, 120, 170],
+    costs: [65, 45, 70, 100, 150, 210],
     rechargeTimes: [10, 7, 4.5, 2.5, 1.6, 1], // seconds to come back, by upgrade level
     maxPerStructure: 1, // one shield at a time (no stacking)
     radius: 72, // dome radius (world units) — also the interception range
@@ -248,10 +251,10 @@ export const CONFIG = {
   // --- Waves --------------------------------------------------------------
   wave: {
     baseMissiles: 19, // missiles on wave 1
-    missilesPerWave: 4, // additional missiles each wave
-    baseSpawnGap: 1.05, // seconds between spawns on wave 1
-    spawnGapPerWave: 0.1, // spawn gap reduction per wave
-    minSpawnGap: 0.35,
+    missilesPerWave: 6, // additional missiles each wave
+    baseSpawnGap: 0.95, // seconds between spawns on wave 1
+    spawnGapPerWave: 0.12, // spawn gap reduction per wave
+    minSpawnGap: 0.3,
     endDelay: 1.0, // beat after the last threat dies before the wave clears
     intermissionTime: 4.0, // seconds of breather between waves
   },
@@ -287,12 +290,11 @@ export const CONFIG = {
   shop: {
     // Interceptor stock is unlimited; you buy down the reload cooldown.
     // Length = max upgrade levels (matches interceptor.cooldowns - 1).
-    interceptorCost: 10, // buy the battery itself — cheap, the natural first purchase
-    interceptorCooldownCosts: [25, 45, 70, 110, 160, 220, 300],
-    repairCityCost: 90, // cost to repair a destroyed city
-    fireRateCosts: [25, 40, 60, 90, 130, 180],
+    interceptorCost: 12, // buy the battery itself — cheap, the natural first purchase
+    interceptorCooldownCosts: [30, 55, 85, 130, 190, 260, 350],
+    fireRateCosts: [30, 50, 75, 110, 160, 220],
     fireRateFactor: 0.82, // fire interval multiplier per level
-    twinBarrelCost: 80, // one-time: a second barrel firing side by side
+    twinBarrelCost: 100, // one-time: a second barrel firing side by side
   },
 
   // --- 3D render / bloom --------------------------------------------------

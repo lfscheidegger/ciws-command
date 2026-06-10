@@ -488,8 +488,10 @@ export class Game {
   chooseThreat() {
     const M = CONFIG.missile;
     // Nukes never open or close a wave — they arrive while you're already
-    // busy. Late waves can roll two.
-    const nukeCap = this.wave >= M.nuke.twoFromWave ? 2 : M.nuke.maxPerWave;
+    // busy. The per-wave cap keeps climbing: one at first, +1 every few waves.
+    const nukeCap =
+      M.nuke.maxPerWave +
+      Math.max(0, Math.floor((this.wave - M.nuke.fromWave) / M.nuke.wavesPerExtra));
     const spawnedSoFar = this.waveSpawnTotal - this.toSpawn;
     if (
       this.wave >= M.nuke.fromWave &&
@@ -1443,7 +1445,7 @@ export class Game {
       const rows = [
         ['AIM', 'Move the mouse to lay the CIWS gun. It fires on its own', 'while threats are inbound, and holds fire when the sky is clear.'],
         ['AUTO DEFENSES', 'Interceptors (a cheap first armory buy) launch themselves at', 'distant, high-value threats; the laser burns down what gets close.'],
-        ['ARMORY', 'Between waves, spend credits on faster reloads, fire rate,', 'twin barrels, the laser, a gun shield, and city repairs.'],
+        ['ARMORY', 'Between waves, spend credits on faster reloads, fire rate,', 'twin barrels, the laser, and a gun shield. Lost cities stay lost.'],
         ['SURVIVE', 'Protect six cities. One hit on the gun ends the run —', 'only the shield dome can absorb it.'],
         ['THREATS', 'MIRVs split, hypersonics sprint, cruise missiles and drones', 'flank, stealth decloaks late... and nukes level half the map.'],
       ];
@@ -1592,25 +1594,6 @@ export class Game {
         ],
       });
     }
-
-    const deadCity = this.cities.some((c) => !c.alive);
-    items.push({
-      label: 'Repair City',
-      desc: deadCity ? 'Rebuild one destroyed city' : 'All cities intact',
-      cost: S.repairCityCost,
-      soldOut: !deadCity,
-      enabled: deadCity && cr >= S.repairCityCost,
-      action: () => {
-        const c = this.cities.find((c) => !c.alive);
-        if (c) c.alive = true;
-      },
-      info: [
-        'Rebuilds one destroyed city. Dead cities pay',
-        'no end-of-wave bonus, and losing all six ends',
-        'the run — repairs are pricey but keep your',
-        'income (and the game) alive.',
-      ],
-    });
 
     const sl = this.shieldLevel;
     const slMax = sl >= CONFIG.shield.costs.length;
