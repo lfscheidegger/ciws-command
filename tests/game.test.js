@@ -866,7 +866,7 @@ describe('New threats', () => {
     expect(nuke.dead).toBe(false); // shrugs off a blast
     expect(nuke.hp).toBe(CONFIG.missile.hp.nuke - CONFIG.interceptor.blastDamage);
     const needed = Math.ceil(CONFIG.missile.hp.nuke / CONFIG.interceptor.blastDamage);
-    expect(needed).toBeGreaterThanOrEqual(5); // interceptors alone can't realistically stop it
+    expect(needed).toBeGreaterThanOrEqual(3); // takes a salvo, not a lucky single
     for (let i = 1; i < needed; i++) g.detonateInterceptor({ x: 700, y: 300 });
     expect(nuke.dead).toBe(true);
   });
@@ -1143,6 +1143,10 @@ describe('Bombers & glide bombs', () => {
     expect(bomber.type).toBe('bomber');
     expect(Math.abs(bomber.vy)).toBeLessThan(1e-9); // level flight
     expect(bomber.bombsLeft).toBeGreaterThanOrEqual(CONFIG.missile.bomber.bombs[0]);
+    // Its bombs may target the gun; shield it so a lucky hit can't end the
+    // game (and freeze the bomber) mid-test.
+    g.turrets[0].shieldMax = 99;
+    g.turrets[0].shields = 99;
 
     const leaks0 = g.waveLeaks;
     let guard = 0;

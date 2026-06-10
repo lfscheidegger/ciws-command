@@ -78,7 +78,7 @@ export const CONFIG = {
       drone: 1,
       bomber: 3,
       glidebomb: 1,
-      nuke: 40,
+      nuke: 20,
     },
     hitFlashTime: 0.12, // seconds the body flashes white on a non-killing hit
 

@@ -31,9 +31,10 @@ bun test          # or: bun run test
 ```
 
 It covers `utils`, `physics`, the entities (ballistics, drag, MIRV split,
-interceptor boost/coast), the weapon systems, and the `Game` orchestration
-(waves, spawning/threat gating, collisions & HP, bounties, ground impact,
-interceptors, the economy breakdown, the shop, and win/lose conditions).
+interceptor boost/coast/energy), the weapon systems, the high-score table, and
+the `Game` orchestration (waves, spawning/threat gating, collisions & HP,
+bounties, impacts and nuke air-bursts, bombers, the autonomous launcher and
+laser, the economy, the shop, and win/lose conditions).
 
 The simulation is headless-testable because the WebGL renderer is **injected**
 into `Game` rather than imported — see the architecture note below.
@@ -87,9 +88,9 @@ screen at the start covers all of this in-game.
 You earn **credits** (separate from score) from several sources, shown as a
 breakdown on the wave-clear screen:
 
-- **Kill bounties**, scaled by threat type — standard/drone `1`, evasive `2`,
-  hypersonic/cruise `3`, MIRV carrier `4` (its split children pay the standard
-  rate), nuke `12`.
+- **Kill bounties**, scaled by threat type — standard/drone/glide-bomb `1`,
+  evasive `2`, hypersonic/cruise `3`, MIRV carrier/stealth/bomber `4` (split
+  MIRV children pay the standard rate), nuke `12`.
 - **All-clear bonus** for destroying *every* enemy that wave (nothing leaked).
 - **Cities saved** — per surviving city.
 
@@ -120,13 +121,13 @@ Prices, amounts and earnings live in `config.economy`, `config.shop`, and
 
 ### Rules
 
-- 6 wide cities cluster around a single central CIWS gun — flanked by the
-  laser emplacement (left, once bought) and the interceptor launch rail
-  (right; the missile tip shows whenever a launch is ready). Most missiles
-  rain from the top; cruise missiles and drone swarms sweep in from the edges.
-- The turret nearest your cursor is active and tracks the mouse. Rounds
-  disperse in a small cone, so closer, well-led shots land more reliably. One
-  hit destroys a standard missile.
+- 6 wide cities cluster around a single central CIWS gun — flanked, once
+  bought, by the laser emplacement (left) and the THAAD launcher truck
+  (right; the next missile's tip pokes from the pod whenever a launch is
+  ready). Most threats rain from the top; cruise missiles, drone swarms and
+  bombers sweep in from the edges.
+- The gun tracks the mouse. Rounds disperse in a small cone, so closer,
+  well-led shots land more reliably. One hit destroys a standard missile.
 - A missile reaching the ground blasts everything within its radius — a hit
   anywhere on a city's footprint counts, not just dead centre. Lose all
   cities, or take a **single hit on the central gun**, and it's game over —
@@ -152,11 +153,11 @@ Prices, amounts and earnings live in `config.economy`, `config.shop`, and
 | Bomber (bronze, Su-27 silhouette) | wave 4+ | Crosses at mid altitude dropping 2–3 **glide bombs**, and **jinks evasively** when an interceptor closes — it occasionally dodges one outright (1 hit each — yes, you can shoot down glide bombs; real ones get intercepted too). Killing the bomber pays 4 but it exits without leaking if you let it go; 3 hits |
 | Hypersonic (orange dart) | wave 4+ | Very fast and barely slows in the dense air; 1 hit but hard to track |
 | Stealth cruise (pale, ghostly) | wave 6+ | Flies the cruise profile **cloaked** — invisible, silent, no lock-on, no laser — until its pop-up; a blind CIWS sweep can still clip it; 2 hits |
-| Nuke (crimson, huge) | wave 5+ | Announced by a klaxon and a **"Nuclear launch detected"** voice; never the first or last threat of a wave (two possible in late waves). Full ballistic speed and **massively armoured** (40 hits — interceptors alone can't stop it). Targets **inner cities** and **air-bursts** above them, leveling the target **and both neighbours** — including the CIWS if it's next door — then a mushroom cloud climbs |
+| Nuke (crimson, huge) | wave 5+ | Announced by a klaxon and a **"Nuclear launch detected"** voice; never the first or last threat of a wave (two possible in late waves). Full ballistic speed and **heavily armoured** (20 hits — a single interceptor barely dents it). Targets **inner cities** and **air-bursts** above them, leveling the target **and both neighbours** — including the CIWS if it's next door — then a mushroom cloud climbs |
 
 A non-killing hit on the armoured MIRV flashes it white with a metallic ting —
 chip it down with the gun, or pop the whole bus with one interceptor before it
-splits. Missile **speed is constant across waves** (~240 px/s base); difficulty
+splits. Missile **speed is constant across waves** (~190 px/s base); difficulty
 ramps via missile *count*, spawn *cadence*, and the threat *mix*, not speed.
 
 Per-type hit points live in `config.missile.hp` and are fully tunable.
@@ -198,11 +199,12 @@ fully offline.
 | `js/utils.js` | Math helpers (clamp, rand, distance, array culling) |
 | `js/physics.js` | Altitude-based air-density model + quadratic drag helper |
 | `js/entities.js` | `City`, `Turret`, `Bullet`, `EnemyMissile`, `Interceptor`, `Particle` (data + update, no draw) |
-| `js/weapons.js` | `CIWSWeapon`, `InterceptorWeapon` — stats, inventory, upgrades, fire logic |
-| `js/audio.js` | Procedural Web Audio SFX (singleton `sfx`) |
+| `js/weapons.js` | `CIWSWeapon`, `InterceptorWeapon`, `LaserWeapon` — stats, upgrades, fire logic |
+| `js/scores.js` | Local high-score table (localStorage, injectable for tests) |
+| `js/audio.js` | Procedural Web Audio SFX + speech announcements (singleton `sfx`) |
 | `js/renderer3d.js` | `Renderer`: Three.js scene, bloom, GPU buffers, projection |
 | `js/game.js` | `Game`: state machine, waves, input, simulation, 2D HUD |
-| `js/main.js` | Canvas wiring (creates the Renderer, injects it into Game) + rAF loop |
+| `js/main.js` | Canvas wiring + rAF loop + frame-rate quality governor |
 | `vendor/three/` | Pinned Three.js r160 core + postprocessing addons |
 | `serve.py` | No-cache static dev server |
 | `tests/` | `bun test` suite + setup/helpers |
@@ -214,15 +216,15 @@ with a stub renderer. Audio is likewise inert until a user gesture calls
 `sfx.unlock()`, so it needs no stubbing in tests.
 
 **Separation of concerns:** the simulation runs in a **fixed virtual resolution**
-(`config.world`, default 1280×800) so balance — distances, speeds, gun spacing —
-never depends on the window size. The camera *contains* that fixed play field at
-any window aspect (extra sky/ground letterboxes around it). `renderer3d.js` maps
-sim space to 3D world space, draws everything as emissive neon with an
-UnrealBloom pass, and exposes `screenToWorld` / `worldToScreen` so input and the
-HUD overlay stay aligned with the tilted camera. The HUD/menus/shop are drawn in
-screen space (window pixels); the in-world HUD bits (ammo readouts, lock reticle)
-project through the camera. Entities carry no draw code — the renderer reads
-their fields.
+(`config.world`, default 1400×1350) so balance — distances, speeds, gun spacing —
+never depends on the window size. The camera frames that field edge-to-edge
+vertically at any window aspect; on wide monitors the HUD docks into the spare
+columns beside the field (and collapses into corner overlays on narrow ones).
+`renderer3d.js` maps sim space to 3D world space, draws everything as emissive
+neon with an UnrealBloom pass, and exposes `screenToWorld` / `worldToScreen` so
+input and the HUD overlay stay aligned with the tilted camera. The HUD, menus
+and shop are drawn in screen space on a 2D canvas. Entities carry no draw code —
+the renderer reads their fields.
 
 ## License
 
@@ -233,9 +235,8 @@ carries its own MIT license.
 
 This is the foundation for a broader missile-defense game. Natural next steps:
 
-- More weapon systems on the `weapons.js` abstraction (e.g. long-range vs.
-  point-defense interceptors, flak, lasers) and more shop upgrades.
-- More threat variety: cruise missiles (curving paths), saturation salvos,
-  decoys, and aircraft.
+- More weapon systems on the `weapons.js` abstraction (e.g. flak bursts,
+  long-range area-denial interceptors) and more shop upgrades.
+- More threat variety: saturation salvos, decoys, jamming.
 - Deeper economy: persistent upgrades across runs, city armour, etc.
-- High-score persistence and a music bed.
+- A music bed and an online leaderboard.
