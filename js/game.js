@@ -36,7 +36,6 @@ export class Game {
     this.explosions = []; // transient fireball/shockwave visual events
     this.interceptorList = []; // in-flight interceptors
     this.floatTexts = []; // floating "+credits" labels on kills
-    this.lockedTarget = null; // missile under the lock reticle
 
     // Weapon systems + economy.
     this.ciws = new CIWSWeapon();
@@ -44,7 +43,6 @@ export class Game {
     this.laser = new LaserWeapon();
     this.laserBeams = []; // fading beam visuals {x1,y1,x2,y2,life,maxLife}
     this.laserBeamLive = null; // the sustained beam while a burn is in progress
-    this.firing = false; // left trigger held (manual mode)
     this.shieldLevel = 0; // gun-shield upgrades bought (0 = no shield)
     this.nukesSpawned = 0; // nukes rolled this wave (capped per wave)
     this.pendingNukes = []; // countdowns between launch warning and spawn
@@ -55,10 +53,6 @@ export class Game {
     this._shopRects = []; // hit-test rects, rebuilt each shop frame
 
     this.state = 'menu'; // menu | playing | intermission | gameover
-    this.mode = 'manual'; // manual | aiGunner (auto-CIWS, player runs interceptors)
-    this.menuMode = 'manual'; // mode highlighted on the menu before deploying
-    this._menuRects = []; // hit-test rects for menu mode buttons
-    this.aiGunTarget = null; // missile the auto-gun is currently engaging
     this.paused = false;
     this.time = 0; // accumulates for HUD animations
     this.lossReason = null; // why the last game ended (for the game-over screen)
@@ -166,10 +160,7 @@ export class Game {
   // -------------------------------------------------------------------------
   // Game flow
   // -------------------------------------------------------------------------
-  startGame(mode = this.menuMode) {
-    this.mode = mode === 'aiGunner' ? 'aiGunner' : 'manual';
-    this.menuMode = this.mode;
-    this.aiGunTarget = null;
+  startGame() {
     this.cities = [];
     this.turrets = [];
     this.missiles = [];
@@ -185,7 +176,6 @@ export class Game {
     this.laser = new LaserWeapon();
     this.laserBeams = [];
     this.laserBeamLive = null;
-    this.firing = false;
     this.shieldLevel = 0;
     this.pendingNukes = [];
     this.paused = false; // restarting (R) always unpauses
@@ -224,7 +214,6 @@ export class Game {
     );
     this.spawnTimer = rand(0.3, this.spawnGap);
     this.waveEndTimer = 0;
-    this.aiGunTarget = null;
     this.state = 'playing';
   }
 
@@ -248,7 +237,6 @@ export class Game {
     this.interceptorList = [];
     this.nextWave = this.wave + 1;
     this.state = 'intermission';
-    this.firing = false;
     this.laserBeamLive = null;
     this.laser.target = null;
     sfx.waveClear();
@@ -293,7 +281,6 @@ export class Game {
   gameOver(reason = 'Defeat') {
     this.state = 'gameover';
     this.lossReason = reason;
-    this.firing = false;
     this.laserBeamLive = null;
     sfx.gameOver();
   }
@@ -514,129 +501,9 @@ export class Game {
     return usable || anyAlive;
   }
 
-  // -------------------------------------------------------------------------
-  // AI gunner — drives the CIWS automatically (the "AI runs the gun" mode).
-  // -------------------------------------------------------------------------
-  /**
-   * Lead solution: where to aim so a bullet meets the missile. Iterates the
-   * intercept time (bullet speed vs. the target's velocity), then nudges the aim
-   * point up to compensate for gravity drop over the flight (drag lengthens the
-   * flight, so dropComp pads it).
-   */
-  leadSolution(turret, m) {
-    const S = CONFIG.bullet.speed;
-    let t = Math.hypot(m.x - turret.x, m.y - turret.y) / S;
-    for (let i = 0; i < CONFIG.ai.leadIterations; i++) {
-      const px = m.x + m.vx * t;
-      const py = m.y + m.vy * t;
-      t = Math.hypot(px - turret.x, py - turret.y) / S;
-    }
-    const px = m.x + m.vx * t;
-    let py = m.y + m.vy * t;
-    const g = CONFIG.physics.gravity * CONFIG.physics.bulletGravityMul;
-    py -= 0.5 * g * t * t * CONFIG.ai.dropComp; // aim higher (sim +y is down)
-    return { x: px, y: py, t };
-  }
-
-  /**
-   * Choose the missile the auto-gun should engage: the most urgent threat that
-   * doesn't already have enough rounds inbound to kill it (so fire is spread
-   * across targets instead of dumped into one). The gun engages at ALL ranges;
-   * `engageRange` only biases it toward closer (easier) shots when threats are
-   * otherwise equally urgent. `inbound` maps missile id -> rounds inbound.
-   */
-  pickGunTarget(turret, inbound) {
-    const A = CONFIG.ai;
-    let best = null;
-    let bestScore = -Infinity;
-    for (const m of this.missiles) {
-      if (m.dead || m.stealthed) continue; // the AI can't see cloaked threats
-      const already = inbound.get(m.id) || 0;
-      if (already >= m.hp + A.overkillBuffer) continue; // enough already on the way
-      const slant = Math.hypot(m.x - turret.x, m.y - turret.y);
-      const urgency = clamp(m.y / this.groundY, 0, 1); // nearer the ground => urgent
-      const ease = clamp(1 - slant / A.engageRange, 0, 1); // closer => slight preference
-      const armor = m.hp > 1 ? A.mirvDeprioritize : 1; // leave armoured buses to interceptors
-      const score = (urgency * 2 + ease) * armor;
-      if (score > bestScore) {
-        bestScore = score;
-        best = m;
-      }
-    }
-    return best;
-  }
-
-  /** Count auto-gun rounds currently flying toward a given target id. */
-  inboundCount(id) {
-    let n = 0;
-    for (const b of this.bullets) if (!b.dead && b.targetId === id) n++;
-    return n;
-  }
-
-  /**
-   * Rotate the turret toward `desired`, capped by the AI slew rate (so it can't
-   * snap across the sky). Returns the absolute angular error left after the step.
-   */
-  slewTurret(turret, desired, dt) {
-    let d = desired - turret.angle;
-    while (d > Math.PI) d -= TAU;
-    while (d < -Math.PI) d += TAU;
-    const max = CONFIG.ai.turnRate * dt;
-    if (Math.abs(d) <= max) {
-      turret.angle = desired;
-      return 0;
-    }
-    turret.angle += Math.sign(d) * max;
-    return Math.abs(d) - max;
-  }
-
-  /** Aim + fire the CIWS at the best target this frame (AI-gunner mode). */
-  updateAutoGun(dt) {
-    const t = this.activeTurret;
-    if (!t || !t.alive) {
-      this.aiGunTarget = null;
-      return;
-    }
-    const A = CONFIG.ai;
-    // Stay locked on the current target until it's destroyed, so the gun pours a
-    // burst into one threat instead of flitting between them.
-    let target = this.aiGunTarget;
-    if (!target || target.dead) {
-      const inbound = new Map();
-      for (const b of this.bullets) {
-        if (b.dead || b.targetId == null) continue;
-        inbound.set(b.targetId, (inbound.get(b.targetId) || 0) + 1);
-      }
-      target = this.pickGunTarget(t, inbound);
-    }
-    this.aiGunTarget = target;
-
-    if (!target) {
-      this.slewTurret(t, -Math.PI / 2, dt); // idle: slew back to vertical
-      return;
-    }
-
-    // Slew toward the lead; only fire once the barrel is actually on it.
-    const lead = this.leadSolution(t, target);
-    const desired = Math.atan2(lead.y - t.y, lead.x - t.x);
-    const err = this.slewTurret(t, desired, dt);
-    if (!t.usable) return; // out of ammo — keep tracking
-
-    const committed = this.inboundCount(target.id);
-    if (err <= A.aimTolerance && committed < target.hp + A.overkillBuffer) {
-      const shots = this.ciws.fireFrom(t);
-      if (shots.length) {
-        for (const b of shots) b.targetId = target.id;
-        this.bullets.push(...shots);
-        sfx.fire(this.pan(t.x));
-      }
-    }
-  }
-
   update(dt) {
     if (this.paused) return;
     this.time += dt;
-    this.lockedTarget = null; // recomputed each playing frame
 
     for (const p of this.particles) p.update(dt);
     removeWhere(this.particles, (p) => p.dead);
@@ -649,12 +516,9 @@ export class Game {
     if (this.shakeTime > 0) this.shakeTime -= dt;
 
     // Active turret tracks the cursor in every state (looks alive on menus).
-    // In AI-gunner play the auto-gun aims itself (see updateAutoGun), so don't
-    // override its aim with the cursor.
     const active = this.getActiveTurret();
     this.activeTurret = active;
-    const autoAiming = this.mode === 'aiGunner' && this.state === 'playing';
-    if (active && this.state !== 'gameover' && !autoAiming) {
+    if (active && this.state !== 'gameover') {
       active.aimAt(this.mouseX, this.mouseY);
     }
     for (const t of this.turrets) t.update(dt);
@@ -799,16 +663,14 @@ export class Game {
 
   updatePlaying(dt) {
     const active = this.activeTurret;
-    this.acquireLock();
     this.updateShields(dt);
-    this.interceptorWeapon.update(dt);
+    this.updateInterceptorLauncher(dt);
     this.updateLaser(dt);
 
-    // Fire the CIWS — the player holds the trigger in manual mode, or the AI
-    // aims and fires it in AI-gunner mode.
-    if (this.mode === 'aiGunner') {
-      this.updateAutoGun(dt);
-    } else if (this.firing && active && active.usable) {
+    // The CIWS runs itself: you steer the stream with the cursor, and it
+    // holds fire whenever the sky is clear of visible threats.
+    const threatsUp = this.missiles.some((m) => !m.dead && !m.stealthed);
+    if (threatsUp && active && active.usable) {
       const shots = this.ciws.fireFrom(active);
       if (shots.length) {
         this.bullets.push(...shots);
@@ -1087,56 +949,50 @@ export class Game {
   // -------------------------------------------------------------------------
   // Interceptors (secondary weapon)
   // -------------------------------------------------------------------------
-  /** Lock onto the missile nearest the crosshair within lock range. */
-  acquireLock() {
-    const r = CONFIG.interceptor.lockRadius;
+  /**
+   * The launcher fires itself: whenever it has finished reloading it picks
+   * the highest-value threat, biased toward distant ones (the gun and laser
+   * own the near sky). It never spends a missile on a drone, and it can't
+   * see cloaked stealth missiles.
+   */
+  updateInterceptorLauncher(dt) {
+    const iw = this.interceptorWeapon;
+    iw.update(dt);
+    if (!iw.canLaunch) return;
+    const launcher = this.turrets.find((t) => t.alive);
+    if (!launcher) return;
+    const lx = launcher.x + CONFIG.interceptor.launcherOffsetX;
+    const ly = this.groundY - CONFIG.interceptor.launcherHeight;
     let best = null;
-    let bestD = r * r;
+    let bestScore = -Infinity;
     for (const m of this.missiles) {
-      if (m.stealthed) continue; // cloaked — nothing to lock onto
-      const d = dist2(m.x, m.y, this.mouseX, this.mouseY);
-      if (d < bestD) {
-        bestD = d;
+      if (m.dead || m.stealthed || m.type === 'drone') continue;
+      const d = Math.hypot(m.x - lx, m.y - ly);
+      if (d < CONFIG.interceptor.minTargetDist) continue; // gun's business
+      const score = this.missileBounty(m) * 2 + d / 400; // value first, then reach
+      if (score > bestScore) {
+        bestScore = score;
         best = m;
       }
     }
-    this.lockedTarget = best;
-  }
-
-  /** Launch an interceptor at the locked target (right-click). */
-  fireInterceptor() {
-    if (!this.interceptorWeapon.canLaunch || !this.lockedTarget) {
-      sfx.denied();
-      return;
-    }
-    const target = this.lockedTarget;
-    // Launch from the alive turret nearest the target (else screen-bottom).
-    let launcher = null;
-    let bd = Infinity;
-    for (const t of this.turrets) {
-      if (!t.alive) continue;
-      const d = Math.abs(t.x - target.x);
-      if (d < bd) {
-        bd = d;
-        launcher = t;
-      }
-    }
-    // Fires from the launcher emplacement to the right of the gun mount.
-    const lx = (launcher ? launcher.x : this.W / 2) + CONFIG.interceptor.launcherOffsetX;
-    const ly = this.groundY - CONFIG.interceptor.launcherHeight;
-    const it = this.interceptorWeapon.launch(lx, ly, target);
+    if (!best) return;
+    const it = iw.launch(lx, ly, best);
     if (it) {
       this.interceptorList.push(it);
       sfx.rocketBurn(CONFIG.interceptor.boostTime, this.pan(lx));
     }
   }
 
-  /** Nearest live (visible) missile to a given interceptor, for retasking. */
+  /**
+   * Nearest live (visible) missile to a given interceptor, for retasking.
+   * Drones are never valid interceptor targets — not even mid-flight — though
+   * one caught in a blast still dies.
+   */
   nearestInterceptTarget(it) {
     let best = null;
     let bestD = Infinity;
     for (const m of this.missiles) {
-      if (m.dead || m.stealthed) continue;
+      if (m.dead || m.stealthed || m.type === 'drone') continue;
       const d = dist2(m.x, m.y, it.x, it.y);
       if (d < bestD) {
         bestD = d;
@@ -1196,7 +1052,6 @@ export class Game {
 
     if (aiming) {
       this.drawAimLine(ctx);
-      this.drawLockIndicator(ctx);
     }
     this.drawFloatTexts(ctx);
     this.drawHUD(ctx);
@@ -1215,23 +1070,6 @@ export class Game {
     const my = t.y + Math.sin(t.angle) * CONFIG.turret.barrelLength;
     const s = this.renderer.worldToScreen(mx, my);
 
-    if (this.mode === 'aiGunner') {
-      // Show what the auto-gun is tracking, not a cursor line.
-      const tgt = this.aiGunTarget;
-      if (!tgt || tgt.dead) return;
-      const p = this.renderer.worldToScreen(tgt.x, tgt.y);
-      ctx.save();
-      ctx.strokeStyle = t.ammo > 0 ? 'rgba(255,179,71,0.35)' : 'rgba(255,90,77,0.3)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 6]);
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y);
-      ctx.lineTo(p.x, p.y);
-      ctx.stroke();
-      ctx.restore();
-      return;
-    }
-
     ctx.save();
     ctx.strokeStyle =
       t.ammo > 0 ? 'rgba(255,179,71,0.22)' : 'rgba(255,90,77,0.22)';
@@ -1244,50 +1082,12 @@ export class Game {
     ctx.restore();
   }
 
-  drawLockIndicator(ctx) {
-    const t = this.lockedTarget;
-    if (!t) return;
-    const p = this.renderer.worldToScreen(t.x, t.y);
-    const armed = this.interceptorWeapon.count > 0;
-    const col = armed ? C.lock : C.hudDim;
-    const s = 17 + Math.sin(this.time * 9) * 2.5; // pulsing bracket size
-    const len = 7;
-    ctx.save();
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 2;
-    for (const [sx, sy] of [
-      [-1, -1],
-      [1, -1],
-      [-1, 1],
-      [1, 1],
-    ]) {
-      const cx = p.x + sx * s;
-      const cy = p.y + sy * s;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - sy * len);
-      ctx.lineTo(cx, cy);
-      ctx.lineTo(cx - sx * len, cy);
-      ctx.stroke();
-    }
-    ctx.fillStyle = col;
-    ctx.font = '11px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillText(armed ? 'LOCK ▸ SPACE' : 'NO INTERCEPTORS', p.x, p.y - s - 7);
-    ctx.restore();
-  }
-
   drawCrosshair(ctx) {
     const t = this.activeTurret;
-    // The red "can't fire" tint only applies while actually aiming in play. In AI
-    // mode it reflects interceptor stock; otherwise the gun's ammo. On menus / the
-    // shop / game-over it's just a neutral reticle.
+    // Red only when the gun mount is gone (nothing left to aim) during play;
+    // on menus / the shop / game-over it's just a neutral reticle.
     const aiming = this.state === 'playing' && !this.paused;
-    // The crosshair turns red when the left button can't act: in AI-gunner
-    // mode that's a reloading launcher; in manual mode a dead gun mount.
-    const empty =
-      aiming &&
-      (this.mode === 'aiGunner' ? !this.interceptorWeapon.canLaunch : !t || !t.alive);
+    const empty = aiming && (!t || !t.alive);
     const col = empty ? C.crosshairEmpty : C.crosshair;
     const x = this.pointerX;
     const y = this.pointerY;
@@ -1352,118 +1152,134 @@ export class Game {
     }
   }
 
-  drawHUD(ctx) {
-    if (this.state === 'menu') return;
-
-    this.text(`SCORE ${this.score}`, 20, 30, { size: 18, weight: 'bold' });
-    this.text(`WAVE ${this.wave}`, this.screenW / 2, 30, {
-      size: 18,
-      weight: 'bold',
-      align: 'center',
-    });
-    const aliveCities = this.cities.filter((c) => c.alive).length;
-    this.text(`CITIES ${aliveCities}/${this.cities.length}`, this.screenW - 20, 30, {
-      size: 18,
-      weight: 'bold',
-      align: 'right',
-    });
-    if (sfx.muted) {
-      this.text('MUTED (M)', this.screenW - 20, 52, {
-        size: 12,
-        align: 'right',
-        color: C.hudDim,
-      });
-    }
-
-    // Per-turret status, anchored under each gun via projection. Ammo is
-    // infinite now, so the readout just marks the mount itself.
-    for (const t of this.turrets) {
-      const p = this.renderer.worldToScreen(t.x, t.groundY);
-      const y = p.y + 20;
-      const active = t === this.activeTurret;
-      let col = active ? C.turretActive : C.hudDim;
-      if (!t.alive) col = C.crosshairEmpty;
-      this.text(t.alive ? 'CIWS' : 'KIA', p.x, y, {
-        size: 12,
-        color: col,
-        align: 'center',
-      });
-      if (t.alive && this.mode === 'aiGunner') {
-        this.text('⟳ AUTO', p.x, y + 16, {
-          size: 11,
-          align: 'center',
-          color: C.turretActive,
-        });
-      }
-    }
-
-    this.drawWeaponStrip(ctx);
+  /**
+   * Screen x-extents of the play field, for docking the HUD in the dead
+   * columns beside it (the camera fills the screen vertically, so on wide
+   * monitors the side columns are the only spare real estate).
+   */
+  hudColumns() {
+    const tl = this.renderer.worldToScreen(0, 0);
+    const bl = this.renderer.worldToScreen(0, this.groundY);
+    const tr = this.renderer.worldToScreen(this.W, 0);
+    const br = this.renderer.worldToScreen(this.W, this.groundY);
+    const left = Math.min(tl.x, bl.x);
+    const right = Math.max(tr.x, br.x);
+    return { left, right, width: Math.min(left, this.screenW - right) };
   }
 
-  /**
-   * Weapon-status strip below the ground line, centred under the gun complex,
-   * so reload/charge state sits right where the action is: interceptor on the
-   * left, credits in the middle, laser on the right.
-   */
-  drawWeaponStrip(ctx) {
-    const base = this.renderer.worldToScreen(this.W / 2, this.groundY);
-    const cx = base.x;
-    const y = Math.min(base.y + 58, this.screenH - 36);
-    const barW = 110;
+  drawHUD(ctx) {
+    if (this.state === 'menu') return;
+    const cols = this.hudColumns();
+    if (cols.width >= 120) this.drawSideHUD(ctx, cols);
+    else this.drawCornerHUD(ctx);
+  }
 
-    // Interceptor block (left of centre), bar fills as the reload completes.
-    const iw = this.interceptorWeapon;
-    const ready = iw.canLaunch;
-    const ix = cx - 290;
-    ctx.beginPath();
-    ctx.moveTo(ix - 12, y - 10);
-    ctx.lineTo(ix - 7, y - 5);
-    ctx.lineTo(ix - 12, y);
-    ctx.lineTo(ix - 17, y - 5);
-    ctx.closePath();
-    ctx.fillStyle = ready ? C.interceptor : 'rgba(124,198,255,0.25)';
-    ctx.fill();
-    this.text(ready ? 'INTCP READY' : 'INTCP RELOADING', ix, y, {
-      size: 13,
-      color: ready ? C.interceptor : C.hudDim,
-    });
-    ctx.fillStyle = 'rgba(255,255,255,0.12)';
-    ctx.fillRect(ix, y + 6, barW, 4);
-    ctx.fillStyle = ready ? C.interceptor : C.hudDim;
-    ctx.fillRect(ix, y + 6, barW * (1 - iw.reloadFrac), 4);
-
-    // Credits, centred under the gun.
-    this.text(`CR ${this.credits}`, cx, y, {
-      size: 14,
+  /** A small label-over-value block; returns the y below it. */
+  hudStat(label, value, x, y, color = C.hud, big = 22) {
+    this.text(label, x, y, { size: 11, align: 'center', color: C.hudDim });
+    this.text(`${value}`, x, y + big, {
+      size: big,
       align: 'center',
-      color: C.credits,
+      weight: 'bold',
+      color,
     });
+    return y + big + 26;
+  }
 
-    // Laser block (right of centre), bar fills as the capacitors charge.
-    if (this.laser.owned) {
-      const lReady = this.laser.canFire;
-      const lLabel = this.laser.burning
-        ? 'LASER FIRING'
-        : lReady
-        ? 'LASER CHARGED'
-        : 'LASER CHARGING';
-      const lx = cx + 160;
-      this.text(lLabel, lx, y, {
-        size: 13,
-        color: lReady || this.laser.burning ? C.laser : C.hudDim,
-      });
-      ctx.fillStyle = 'rgba(255,255,255,0.12)';
-      ctx.fillRect(lx, y + 6, barW, 4);
-      ctx.fillStyle = lReady || this.laser.burning ? C.laser : C.hudDim;
-      ctx.fillRect(lx, y + 6, barW * this.laser.chargeFrac, 4);
+  /** A status line + progress bar centred at x; returns the y below it. */
+  hudBar(ctx, label, frac, on, color, x, y, barW = 110) {
+    this.text(label, x, y, { size: 12, align: 'center', color: on ? color : C.hudDim });
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(x - barW / 2, y + 7, barW, 4);
+    ctx.fillStyle = on ? color : C.hudDim;
+    ctx.fillRect(x - barW / 2, y + 7, barW * frac, 4);
+    return y + 34;
+  }
+
+  /** Wide windows: stats docked in the columns flanking the play field. */
+  drawSideHUD(ctx, cols) {
+    const lx = cols.left / 2;
+    let y = this.screenH * 0.12;
+    y = this.hudStat('SCORE', this.score, lx, y);
+    y = this.hudStat('WAVE', this.wave, lx, y);
+    const aliveCities = this.cities.filter((c) => c.alive).length;
+    y = this.hudStat(
+      'CITIES',
+      `${aliveCities}/${this.cities.length}`,
+      lx,
+      y,
+      aliveCities <= 2 ? C.crosshairEmpty : C.hud
+    );
+    if (sfx.muted) {
+      this.text('MUTED (M)', lx, y, { size: 11, align: 'center', color: C.hudDim });
     }
 
-    if (this.mode === 'aiGunner') {
-      this.text('ROLE  AI GUNNER · you fly interceptors', cx, y + 26, {
-        size: 11,
-        align: 'center',
-        color: C.turretActive,
+    const rx = (cols.right + this.screenW) / 2;
+    const barW = Math.min(116, (this.screenW - cols.right) * 0.8);
+    y = this.screenH * 0.12;
+    y = this.hudStat('CREDITS', this.credits, rx, y, C.credits);
+    const iw = this.interceptorWeapon;
+    if (iw.owned) {
+      const ready = iw.canLaunch;
+      y = this.hudBar(
+        ctx,
+        ready ? 'INTCP READY' : 'INTCP RELOADING',
+        1 - iw.reloadFrac,
+        ready,
+        C.interceptor,
+        rx,
+        y,
+        barW
+      );
+    }
+    if (this.laser.owned) {
+      const lReady = this.laser.canFire || this.laser.burning;
+      const lLabel = this.laser.burning
+        ? 'LASER FIRING'
+        : this.laser.canFire
+        ? 'LASER CHARGED'
+        : 'LASER CHARGING';
+      this.hudBar(ctx, lLabel, this.laser.chargeFrac, lReady, C.laser, rx, y, barW);
+    }
+  }
+
+  /** Narrow windows: compact overlay tucked into the field's top corners. */
+  drawCornerHUD(ctx) {
+    this.text(`SCORE ${this.score}`, 14, 26, { size: 15, weight: 'bold' });
+    this.text(`WAVE ${this.wave}`, 14, 46, { size: 13, color: C.hud });
+    const aliveCities = this.cities.filter((c) => c.alive).length;
+    this.text(`CITIES ${aliveCities}/${this.cities.length}`, 14, 64, {
+      size: 13,
+      color: aliveCities <= 2 ? C.crosshairEmpty : C.hud,
+    });
+    if (sfx.muted) this.text('MUTED (M)', 14, 82, { size: 11, color: C.hudDim });
+
+    const rx = this.screenW - 14;
+    this.text(`CR ${this.credits}`, rx, 26, { size: 15, weight: 'bold', align: 'right', color: C.credits });
+    const iw = this.interceptorWeapon;
+    if (iw.owned) {
+      this.text(iw.canLaunch ? 'INTCP READY' : 'INTCP RELOADING', rx, 46, {
+        size: 12,
+        align: 'right',
+        color: iw.canLaunch ? C.interceptor : C.hudDim,
       });
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(rx - 90, 52, 90, 4);
+      ctx.fillStyle = iw.canLaunch ? C.interceptor : C.hudDim;
+      ctx.fillRect(rx - 90, 52, 90 * (1 - iw.reloadFrac), 4);
+    }
+    if (this.laser.owned) {
+      const lOn = this.laser.canFire || this.laser.burning;
+      const lLabel = this.laser.burning
+        ? 'LASER FIRING'
+        : this.laser.canFire
+        ? 'LASER CHARGED'
+        : 'LASER CHARGING';
+      this.text(lLabel, rx, 74, { size: 12, align: 'right', color: lOn ? C.laser : C.hudDim });
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(rx - 90, 80, 90, 4);
+      ctx.fillStyle = lOn ? C.laser : C.hudDim;
+      ctx.fillRect(rx - 90, 80, 90 * this.laser.chargeFrac, 4);
     }
   }
 
@@ -1472,67 +1288,11 @@ export class Game {
     ctx.fillRect(0, 0, this.screenW, this.screenH);
   }
 
-  /** Two selectable role cards on the menu (Manual vs AI gunner). */
-  drawModeButtons(ctx) {
-    const cx = this.screenW / 2;
-    const cards = [
-      {
-        mode: 'manual',
-        key: '1',
-        title: 'MANUAL GUNNER',
-        lines: ['Aim & fire the CIWS yourself.', 'Hold left-click to fire.', 'Right-click / Space: interceptors.'],
-      },
-      {
-        mode: 'aiGunner',
-        key: '2',
-        title: 'AI GUNNER',
-        lines: ['The AI aims the CIWS.', 'You direct the interceptors.', 'Click a threat to launch.'],
-      },
-    ];
-    const w = 320;
-    const h = 132;
-    const gap = 28;
-    const top = this.screenH * 0.52;
-    const startX = cx - w - gap / 2;
-    this._menuRects = [];
-    cards.forEach((card, i) => {
-      const x = startX + i * (w + gap);
-      const selected = this.menuMode === card.mode;
-      const hover = this._inRect(this.pointerX, this.pointerY, { x, y: top, w, h });
-      this._menuRects.push({ x, y: top, w, h, mode: card.mode });
-
-      ctx.save();
-      ctx.fillStyle = selected ? 'rgba(80,120,170,0.30)' : 'rgba(40,58,86,0.30)';
-      this._roundRect(ctx, x, top, w, h, 10);
-      ctx.fill();
-      ctx.lineWidth = selected ? 2.5 : 1.5;
-      ctx.strokeStyle = selected ? C.turretActive : hover ? C.hud : 'rgba(120,150,190,0.4)';
-      this._roundRect(ctx, x, top, w, h, 10);
-      ctx.stroke();
-      ctx.restore();
-
-      const tcol = selected ? C.turretActive : C.hud;
-      this.text(`${card.key} · ${card.title}`, x + w / 2, top + 30, {
-        size: 19,
-        align: 'center',
-        weight: 'bold',
-        color: tcol,
-      });
-      card.lines.forEach((l, j) =>
-        this.text(l, x + w / 2, top + 58 + j * 22, {
-          size: 13.5,
-          align: 'center',
-          color: selected ? C.hud : C.hudDim,
-        })
-      );
-    });
-  }
-
   drawOverlay(ctx) {
     const cx = this.screenW / 2;
     if (this.state === 'menu') {
-      this.dim(ctx, 0.5);
-      this.text('CIWS COMMAND', cx, this.screenH * 0.2, {
+      this.dim(ctx, 0.55);
+      this.text('CIWS COMMAND', cx, this.screenH * 0.16, {
         size: 54,
         align: 'center',
         weight: 'bold',
@@ -1540,34 +1300,46 @@ export class Game {
         glow: true,
       });
       this.text(
-        'Defend your cities with close-in gun systems.',
+        'Defend your cities with close-in weapon systems.',
         cx,
-        this.screenH * 0.2 + 40,
+        this.screenH * 0.16 + 40,
         { size: 18, align: 'center', color: C.hud }
       );
-      const lines = [
-        'Purple weave · green MIRVs split · orange hypersonics come in FAST.',
-        'GUARD THE GUN — a single hit on it ends the game.',
-        'Earn credits between waves to upgrade or repair.',
-        'P pause     R restart     M mute',
-      ];
-      lines.forEach((l, i) =>
-        this.text(l, cx, this.screenH * 0.31 + i * 24, {
-          size: 15,
-          align: 'center',
-          color: C.hudDim,
-        })
-      );
 
-      this.text('CHOOSE YOUR ROLE  (1 / 2)', cx, this.screenH * 0.49, {
+      this.text('HOW TO PLAY', cx, this.screenH * 0.3, {
         size: 16,
         align: 'center',
         weight: 'bold',
         color: C.hud,
       });
-      this.drawModeButtons(ctx);
+      // Label + description rows, centred as a block.
+      const rows = [
+        ['AIM', 'Move the mouse to lay the CIWS gun. It fires on its own', 'while threats are inbound, and holds fire when the sky is clear.'],
+        ['AUTO DEFENSES', 'Interceptors (a cheap first armory buy) launch themselves at', 'distant, high-value threats; the laser burns down what gets close.'],
+        ['ARMORY', 'Between waves, spend credits on faster reloads, fire rate,', 'twin barrels, the laser, a gun shield, and city repairs.'],
+        ['SURVIVE', 'Protect six cities. One hit on the gun ends the run —', 'only the shield dome can absorb it.'],
+        ['THREATS', 'MIRVs split, hypersonics sprint, cruise missiles and drones', 'flank, stealth decloaks late... and nukes level half the map.'],
+      ];
+      let ry = this.screenH * 0.3 + 34;
+      for (const [label, ...lines] of rows) {
+        this.text(label, cx - 230, ry, {
+          size: 13,
+          align: 'right',
+          weight: 'bold',
+          color: C.turretActive,
+        });
+        lines.forEach((l, i) =>
+          this.text(l, cx - 210, ry + i * 18, { size: 13, color: C.hud })
+        );
+        ry += lines.length * 18 + 14;
+      }
 
-      this.text('CLICK a role or press SPACE to deploy', cx, this.screenH * 0.85, {
+      this.text('P pause     R restart     M mute', cx, ry + 10, {
+        size: 14,
+        align: 'center',
+        color: C.hudDim,
+      });
+      this.text('CLICK OR PRESS SPACE TO DEPLOY', cx, this.screenH * 0.88, {
         size: 20,
         align: 'center',
         weight: 'bold',
@@ -1631,16 +1403,39 @@ export class Game {
     const iw = this.interceptorWeapon;
     const items = [];
 
-    const il = iw.cooldownLevel;
-    const ilMax = il >= S.interceptorCooldownCosts.length;
-    items.push({
-      label: `Interceptor Reload${ilMax ? '' : ` (Lv ${il + 1})`}`,
-      desc: `Faster reload between launches  (now ${iw.cooldown}s)`,
-      cost: ilMax ? null : S.interceptorCooldownCosts[il],
-      soldOut: false,
-      enabled: !ilMax && cr >= S.interceptorCooldownCosts[il],
-      action: () => iw.upgradeCooldown(),
-    });
+    if (!iw.owned) {
+      items.push({
+        label: 'Interceptor Battery',
+        desc: 'Auto-launching homing missiles — the natural first buy',
+        cost: S.interceptorCost,
+        soldOut: false,
+        enabled: cr >= S.interceptorCost,
+        action: () => iw.buy(),
+        info: [
+          'Fields a THAAD-style launcher right of the',
+          'gun. It fires itself at distant, high-value',
+          'threats (never drones) and blasts everything',
+          'near the kill. Cheap — buy it early.',
+        ],
+      });
+    } else {
+      const il = iw.cooldownLevel;
+      const ilMax = il >= S.interceptorCooldownCosts.length;
+      items.push({
+        label: `Interceptor Reload${ilMax ? '' : ` (Lv ${il + 1})`}`,
+        desc: `Faster reload between launches  (now ${iw.cooldown}s)`,
+        cost: ilMax ? null : S.interceptorCooldownCosts[il],
+        soldOut: false,
+        enabled: !ilMax && cr >= S.interceptorCooldownCosts[il],
+        action: () => iw.upgradeCooldown(),
+        info: [
+          'Interceptors launch themselves at distant,',
+          'high-value threats (never drones) and blast',
+          'everything near the kill. Each level shortens',
+          `the reload between launches (${CONFIG.interceptor.cooldowns[0]}s down to ${CONFIG.interceptor.cooldowns[CONFIG.interceptor.cooldowns.length - 1]}s).`,
+        ],
+      });
+    }
 
     const deadCity = this.cities.some((c) => !c.alive);
     items.push({
@@ -1653,6 +1448,12 @@ export class Game {
         const c = this.cities.find((c) => !c.alive);
         if (c) c.alive = true;
       },
+      info: [
+        'Rebuilds one destroyed city. Dead cities pay',
+        'no end-of-wave bonus, and losing all six ends',
+        'the run — repairs are pricey but keep your',
+        'income (and the game) alive.',
+      ],
     });
 
     const sl = this.shieldLevel;
@@ -1667,6 +1468,19 @@ export class Game {
       soldOut: false,
       enabled: !slMax && cr >= CONFIG.shield.costs[sl],
       action: () => this.buyGunShield(),
+      info:
+        sl === 0
+          ? [
+              'Fits an energy dome over the CIWS that',
+              'absorbs one warhead, then recharges. A hit',
+              'on the unshielded gun instantly ends the',
+              'run — this is your only insurance.',
+            ]
+          : [
+              'Shortens how long the dome takes to come',
+              `back after absorbing a hit (down to ${CONFIG.shield.rechargeTimes[CONFIG.shield.rechargeTimes.length - 1]}s).`,
+              'It also returns fully charged each wave.',
+            ],
     });
 
     const L = CONFIG.laser;
@@ -1678,6 +1492,12 @@ export class Game {
         soldOut: false,
         enabled: cr >= L.cost,
         action: () => this.laser.buy(),
+        info: [
+          'An autonomous beam emplacement left of the',
+          'gun. It slews onto the lowest drone or RV in',
+          'range and burns it down — weaker at long',
+          'range, and it cannot depress below ~15°.',
+        ],
       });
     } else {
       const ll = this.laser.level;
@@ -1689,6 +1509,10 @@ export class Game {
         soldOut: false,
         enabled: !llMax && cr >= L.upgradeCosts[ll],
         action: () => this.laser.upgradeRecharge(),
+        info: [
+          'Shortens the recharge between laser burns',
+          `(${L.cooldowns[0]}s down to ${L.cooldowns[L.cooldowns.length - 1]}s), so it clears swarms much faster.`,
+        ],
       });
     }
 
@@ -1701,6 +1525,11 @@ export class Game {
       soldOut: false,
       enabled: !frMax && cr >= S.fireRateCosts[fl],
       action: () => this.ciws.upgradeFireRate(),
+      info: [
+        'Spins the gun faster for a denser tracer',
+        'stream — more rounds on target per sweep,',
+        'compounding with Twin Barrels.',
+      ],
     });
 
     const hasTwin = this.ciws.twin;
@@ -1711,6 +1540,11 @@ export class Game {
       soldOut: hasTwin,
       enabled: !hasTwin && cr >= S.twinBarrelCost,
       action: () => this.ciws.upgradeTwin(),
+      info: [
+        'One-time: mounts a second gatling cluster.',
+        'Every trigger pulse sends two rounds flying',
+        'side by side — double the stream density.',
+      ],
     });
 
     return items;
@@ -1772,15 +1606,9 @@ export class Game {
     }
   }
 
-  /** Menu click: pick a mode button (which deploys it) or deploy the selection. */
-  handleMenuClick(px, py) {
-    for (const r of this._menuRects) {
-      if (this._inRect(px, py, r)) {
-        this.startGame(r.mode);
-        return;
-      }
-    }
-    this.startGame(this.menuMode);
+  /** Any click on the menu / game-over screen deploys. */
+  handleMenuClick() {
+    this.startGame();
   }
 
   _inRect(px, py, r) {
@@ -1864,6 +1692,35 @@ export class Game {
       });
     });
 
+    // Hover tooltip: a side panel with the full explanation of the item
+    // under the cursor (hovering works whether or not you can afford it).
+    const hovered = rows.find((r) => this._inRect(this.pointerX, this.pointerY, r));
+    if (hovered && hovered.item.info) {
+      const lines = hovered.item.info;
+      const tw = 318;
+      const th = lines.length * 17 + 22;
+      // Prefer the right side of the panel, then the left; on narrow windows
+      // fall back to a strip tucked under the hovered row.
+      let tx = hovered.x + hovered.w + 14;
+      let ty = hovered.y;
+      if (tx + tw > this.screenW - 8) tx = hovered.x - tw - 14;
+      if (tx < 8) {
+        tx = Math.min(Math.max(8, this.pointerX - tw / 2), this.screenW - tw - 8);
+        ty = hovered.y + hovered.h + 6;
+      }
+      ty = Math.min(ty, this.screenH - th - 8);
+      ctx.fillStyle = C.shopPanel;
+      this._roundRect(ctx, tx, ty, tw, th, 6);
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(120,150,190,0.5)';
+      this._roundRect(ctx, tx, ty, tw, th, 6);
+      ctx.stroke();
+      lines.forEach((l, i) =>
+        this.text(l, tx + 12, ty + 22 + i * 17, { size: 12.5, color: C.hud })
+      );
+    }
+
     const nr = nextRect;
     const hoverN = this._inRect(this.pointerX, this.pointerY, nr);
     ctx.fillStyle = hoverN ? 'rgba(255,179,71,0.9)' : 'rgba(255,179,71,0.55)';
@@ -1899,32 +1756,15 @@ export class Game {
     window.addEventListener('pointerdown', (e) => {
       sfx.unlock();
       setPointer(e);
-      if (e.button === 2) {
-        // Right click: launch an interceptor at the locked target.
-        if (this.state === 'playing' && !this.paused) this.fireInterceptor();
-        return;
-      }
       if (e.button !== 0) return;
+      // In play both weapons run themselves — clicks only drive the menus.
       if (this.state === 'menu' || this.state === 'gameover') {
-        this.handleMenuClick(this.pointerX, this.pointerY);
+        this.handleMenuClick();
       } else if (this.state === 'intermission') {
         this.handleShopClick(this.pointerX, this.pointerY);
-      } else if (this.state === 'playing' && !this.paused) {
-        // In AI-gunner mode the gun runs itself, so a left click directs an
-        // interceptor (same as right-click / Space). In manual mode the left
-        // button is the gun trigger.
-        if (this.mode === 'aiGunner') this.fireInterceptor();
-        else this.firing = true;
       }
     });
     window.addEventListener('contextmenu', (e) => e.preventDefault());
-
-    window.addEventListener('pointerup', () => {
-      this.firing = false;
-    });
-    window.addEventListener('blur', () => {
-      this.firing = false;
-    });
 
     window.addEventListener('keydown', (e) => {
       const key = e.key.toLowerCase();
@@ -1938,19 +1778,12 @@ export class Game {
 
   /**
    * Route a (lowercased) key press. Space is context-sensitive: deploy on the
-   * menu/game-over, advance in the shop, and launch an interceptor in play (a
-   * trackpad-friendly alternative to right-click).
+   * menu/game-over, advance in the shop.
    */
   handleKey(key) {
     if (key === ' ' || key === 'spacebar') {
       if (this.state === 'menu' || this.state === 'gameover') this.startGame();
       else if (this.state === 'intermission') this.proceedToNextWave();
-      else if (this.state === 'playing' && !this.paused) this.fireInterceptor();
-      return;
-    }
-    // On the menu, 1/2 choose the control mode before deploying.
-    if ((this.state === 'menu' || this.state === 'gameover') && (key === '1' || key === '2')) {
-      this.menuMode = key === '2' ? 'aiGunner' : 'manual';
       return;
     }
     if (this.state === 'intermission' && key >= '1' && key <= '9') {
@@ -1961,7 +1794,6 @@ export class Game {
     if (key === 'p') {
       if (this.state === 'playing') {
         this.paused = !this.paused;
-        if (this.paused) this.firing = false;
       }
     } else if (key === 'r') {
       this.startGame();

@@ -42,43 +42,37 @@ into `Game` rather than imported — see the architecture note below.
 
 | Input | Action |
 |-------|--------|
-| Mouse move | Aim the gun (Manual) / aim the interceptor reticle (AI Gunner) |
-| Hold left click | **Manual:** fire the CIWS stream · **AI Gunner:** launch an interceptor |
-| Right click **or** Space | Launch an **interceptor** at the locked target |
+| Mouse move | Aim the CIWS — it fires on its own while threats are inbound |
 | `P` | Pause / resume |
 | `R` | Restart |
 | `M` | Mute / unmute |
-| `Space` / click | Start from the menu / restart after game over |
+| `Space` / click | Deploy from the tutorial screen / restart after game over |
 
-### Modes
-
-Pick a role on the menu (click a card, or press `1` / `2`):
-
-- **Manual Gunner** — you aim and fire the CIWS *and* direct interceptors (the
-  classic mode).
-- **AI Gunner** — an AI runs the CIWS automatically (it picks the most urgent
-  threat at any range, leads it, pours a burst into it, then moves on). **You**
-  focus entirely on the interceptors — left-click (or
-  right-click / Space) launches one at the locked threat. The auto-gun handles
-  the bulk but leaks faster/edge threats at higher waves, which is exactly what
-  your interceptors are for. Auto-gun behaviour is tunable in `config.ai`.
+You aim; everything fires itself. The CIWS shoots wherever you point it (and
+holds fire when the sky is clear), interceptors launch themselves at distant
+high-value threats, and the laser handles whatever gets close. A tutorial
+screen at the start covers all of this in-game.
 
 ### Weapons
 
-- **CIWS gun (hold left click)** — a single central rapid-fire gun with an
-  **endless belt feed**. Cheap and precise but you must lead targets; one
-  tracer kills a standard RV. **If a warhead ever hits the gun, you instantly
-  lose** — so anything heading for the centre is top priority.
-- **Interceptors (right click or Space)** — homing anti-missiles with unlimited
-  stock, gated by a **reload cooldown** (5s at the start; shop upgrades buy it
-  down to 1s, and it's always ready at the start of a wave). Move the crosshair
-  near an incoming threat to lock on (a reticle appears), then press Space (or
-  right-click) to launch. Missiles **cold-launch straight up** from a
-  THAAD-style truck right of the gun, then turn onto an intercept course —
-  low, far targets cost real turning time. If its target dies en route it
-  **retasks onto the nearest threat** (or self-destructs if the sky is
-  clear), and it detonates with an **area blast** — ideal for armoured MIRV
-  buses or tight clusters.
+- **CIWS gun** — a single central rapid-fire gun with an **endless belt
+  feed** that fires automatically while threats are inbound; you steer the
+  stream with the mouse and must lead targets. One tracer kills a standard
+  RV. **If a warhead ever hits the gun, you instantly lose** — so anything
+  heading for the centre is top priority.
+- **Interceptors (autonomous)** — a **cheap armory purchase** (the natural
+  first buy) that fields homing anti-missiles with unlimited stock, gated by
+  a **reload cooldown** (6s at the start; shop upgrades buy it down to 1s),
+  and the pod **starts every wave unloaded**. The launcher fires
+  itself at the **highest-value, most distant threat** — it never engages
+  drones (a blast can still catch one), can't see cloaked stealth, and won't
+  shoot inside its minimum engagement distance. Missiles **cold-launch
+  straight up** from a THAAD-style truck, then turn onto an intercept course —
+  but coasting flight **bleeds energy fast**, hard turns scrub extra speed,
+  and a round that drops below maneuvering speed **self-destructs**: some
+  intercepts genuinely run out of energy. If the target dies en route the
+  missile retasks onto the nearest non-drone threat (or self-destructs), and
+  it detonates with an **area blast**.
 - **Laser (shop upgrade)** — a fully autonomous beam emplacement left of the
   gun with a trainable emitter head. It picks the **lowest** drone or
   normal-type missile in range (it can't track the fast movers), **physically
@@ -95,16 +89,17 @@ breakdown on the wave-clear screen:
 
 - **Kill bounties**, scaled by threat type — standard/drone `1`, evasive `2`,
   hypersonic/cruise `3`, MIRV carrier `4` (its split children pay the standard
-  rate), nuke `8`.
+  rate), nuke `12`.
 - **All-clear bonus** for destroying *every* enemy that wave (nothing leaked).
 - **Cities saved** — per surviving city.
 
 Between waves the intermission becomes an **armory** — click an item (or press
-its number), then **NEXT WAVE** / Space to continue:
+its number), hover any row for a fuller explanation, then **NEXT WAVE** /
+Space to continue. Every ladder runs deep enough to soak late-game credits:
 
 | Item | Effect |
 |------|--------|
-| Interceptor Reload | Shorter launch cooldown, 5s → 1s (multi-level) |
+| Interceptor Battery / Reload | Field the auto-launcher (cheap!), then shorten its cooldown, 6s → 1s (multi-level) |
 | Repair City | Rebuild one destroyed city (expensive) |
 | Gun Shield / Shield Recharge | Fit a dome on the CIWS that absorbs one warhead, then buy down its recharge (multi-level) |
 | Laser Turret / Laser Recharge | Buy the autonomous beam, then speed its recharge (multi-level) |
@@ -148,13 +143,13 @@ Prices, amounts and earnings live in `config.economy`, `config.shop`, and
 | Threat | Appears | Behaviour |
 |--------|---------|-----------|
 | Standard RV (red) | wave 1+ | Straight dive toward a structure; 1 hit |
-| Drone swarm (gray, squat) | wave 2+ | Six slow gliders from one screen edge (counts as one wave slot), each with its own target; 1 hit each |
+| Drone swarm (gray, squat) | wave 2+ | Four slow gliders from one screen edge (counts as one wave slot), each with its own target; 1 hit each |
 | Evasive RV (purple) | wave 2+ | Weaves on an irregular path; 1 hit |
 | MIRV bus (green, large) | wave 3+ | Armoured (3 hits); splits into red RVs at altitude |
 | Cruise missile (gold) | wave 3+ | Enters from a screen edge at low altitude, pops up, then dives; 2 hits |
 | Hypersonic (orange dart) | wave 4+ | Very fast and barely slows in the dense air; 1 hit but hard to track |
 | Stealth cruise (pale, ghostly) | wave 6+ | Flies the cruise profile **cloaked** — invisible, silent, no lock-on, no laser — until its pop-up; a blind CIWS sweep can still clip it; 2 hits |
-| Nuke (crimson, huge) | wave 5+ | Announced by a klaxon and a **"Nuclear launch detected"** voice a few seconds before it appears. **Heavily armoured** (14 hits; takes two interceptor blasts), only targets cities — if it lands, it levels **every city on that half of the map** (max 1/wave) |
+| Nuke (crimson, huge) | wave 5+ | Announced by a klaxon and a **"Nuclear launch detected"** voice a few seconds before it appears. **Massively armoured** (40 hits — interceptors alone can't stop it; the gun must pile on or it WILL land), only targets cities — if it lands, it levels **every city on that half of the map** (max 1/wave) |
 
 A non-killing hit on the armoured MIRV flashes it white with a metallic ting —
 chip it down with the gun, or pop the whole bus with one interceptor before it
@@ -171,7 +166,9 @@ exponentially with altitude), and quadratic drag scales with that density and
 with speed:
 
 - **CIWS rounds** feel gravity and drag — they slow and **arc**, so long shots
-  need lead (the gun is genuinely close-in).
+  need lead (the gun is genuinely close-in). Drag is tuned so a straight-up
+  burst **just barely reaches the top of the field**, and climbing rounds
+  **self-destruct at apogee** — no tracers raining back onto the cities.
 - **Enemy missiles** feel drag only (no gravity, so they still track their
   target) — they **decelerate as they sink** into denser air, giving you more
   time to engage them low.

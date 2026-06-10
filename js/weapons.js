@@ -79,14 +79,22 @@ export class CIWSWeapon {
 }
 
 /**
- * Interceptor launcher — homing anti-missiles with unlimited stock, gated by
- * a reload cooldown. Shop upgrades buy the cooldown down (5s -> 1s).
+ * Interceptor launcher — a cheap shop purchase that then fires itself:
+ * unlimited stock, gated by a reload cooldown that shop upgrades buy down
+ * (6s -> 1s). Does nothing until bought.
  */
 export class InterceptorWeapon {
   constructor() {
     this.name = 'Interceptor';
+    this.owned = false;
     this.cooldownLevel = 0;
     this.timer = 0; // seconds until the next launch is ready
+  }
+
+  /** Field the battery; fresh from the factory it arrives fully loaded. */
+  buy() {
+    this.owned = true;
+    this.timer = 0;
   }
 
   /** Current reload time between launches, by upgrade level. */
@@ -95,7 +103,7 @@ export class InterceptorWeapon {
   }
 
   get canLaunch() {
-    return this.timer <= 0;
+    return this.owned && this.timer <= 0;
   }
 
   /** Fraction of the reload remaining (1 = just fired, 0 = ready). */
@@ -107,9 +115,9 @@ export class InterceptorWeapon {
     if (this.timer > 0) this.timer -= dt;
   }
 
-  /** Ready immediately at the start of each wave. */
+  /** Wave start: the pod is UNLOADED — the first shot is a full reload away. */
   refill() {
-    this.timer = 0;
+    this.timer = this.cooldown;
   }
 
   /** Launch a homing Interceptor and start the reload, or null if reloading. */

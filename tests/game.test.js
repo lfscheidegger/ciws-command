@@ -26,7 +26,7 @@ describe('Game setup', () => {
     expect(g.wave).toBe(1);
     expect(g.score).toBe(0);
     expect(g.credits).toBe(CONFIG.economy.startCredits);
-    expect(g.interceptorWeapon.canLaunch).toBe(true);
+    expect(g.interceptorWeapon.owned).toBe(false); // a shop purchase now
     expect(g.laser.owned).toBe(false);
     expect(g.toSpawn).toBe(CONFIG.wave.baseMissiles);
   });
@@ -38,7 +38,7 @@ describe('Wave flow', () => {
     g.startGame();
     g.bullets = [1, 2, 3];
     g.interceptorList = [1];
-    g.interceptorWeapon.timer = 99; // mid-reload from last wave
+    g.interceptorWeapon.timer = 99; // way over-long timer from a stale state
     g.startWave(4);
     expect(g.wave).toBe(4);
     expect(g.toSpawn).toBe(
@@ -46,7 +46,7 @@ describe('Wave flow', () => {
     );
     expect(g.bullets).toHaveLength(0);
     expect(g.interceptorList).toHaveLength(0);
-    expect(g.interceptorWeapon.canLaunch).toBe(true); // ready again
+    expect(g.interceptorWeapon.timer).toBe(g.interceptorWeapon.cooldown); // fresh (unloaded) reload
     expect(g.waveLeaks).toBe(0);
   });
 
@@ -74,15 +74,15 @@ describe('Wave flow', () => {
     expect(g.waveEndTimer).toBe(0);
   });
 
-  it('proceedToNextWave starts the next wave with the launcher ready', () => {
+  it('proceedToNextWave starts the next wave with a fresh reload running', () => {
     const g = newGame();
     g.startGame();
     g.endWave();
-    g.interceptorWeapon.timer = 99; // mid-reload
+    g.interceptorWeapon.timer = 99; // stale over-long timer
     g.proceedToNextWave();
     expect(g.state).toBe('playing');
     expect(g.wave).toBe(2);
-    expect(g.interceptorWeapon.canLaunch).toBe(true);
+    expect(g.interceptorWeapon.timer).toBe(g.interceptorWeapon.cooldown);
   });
 });
 
@@ -276,41 +276,40 @@ describe('MIRV split spawning', () => {
   });
 });
 
-describe('Interceptors', () => {
-  it('locks the nearest missile within range, else nothing', () => {
+describe('Interceptors (autonomous launcher)', () => {
+  it('auto-launches at the highest-value distant threat, skipping drones', () => {
     const g = newGame();
     g.startGame();
-    const near = new EnemyMissile(700, 300, 700, g.groundY, 150, 0, g.groundY, 'normal');
-    const far = new EnemyMissile(100, 100, 100, g.groundY, 150, 0, g.groundY, 'normal');
-    g.missiles = [near, far];
-    g.mouseX = 700;
-    g.mouseY = 300;
-    g.acquireLock();
-    expect(g.lockedTarget).toBe(near);
-    g.mouseX = 5000;
-    g.mouseY = 5000;
-    g.acquireLock();
-    expect(g.lockedTarget).toBeNull();
+    g.toSpawn = 0;
+    const cheap = new EnemyMissile(300, 200, 300, g.groundY, 150, 0, g.groundY, 'normal');
+    const bus = new EnemyMissile(900, 150, 900, g.groundY, 150, 3, g.groundY, 'normal'); // MIRV
+    const drone = new EnemyMissile(-30, 500, 900, g.groundY, 100, 0, 0, 'drone');
+    g.missiles = [cheap, bus, drone];
+    g.interceptorWeapon.buy();
+    g.interceptorWeapon.timer = 0; // initial reload finished
+    g.updateInterceptorLauncher(1 / 60);
+    expect(g.interceptorList).toHaveLength(1);
+    expect(g.interceptorList[0].target).toBe(bus); // high value beats cheap
+    expect(g.interceptorWeapon.canLaunch).toBe(false); // reload started
+    g.updateInterceptorLauncher(1 / 60);
+    expect(g.interceptorList).toHaveLength(1); // still reloading -> nothing
   });
 
-  it('fires only with a lock and a finished reload', () => {
+  it('never launches at drones, cloaked stealth, or point-blank targets', () => {
     const g = newGame();
     g.startGame();
-    const m = new EnemyMissile(700, 300, 700, g.groundY, 150, 0, g.groundY, 'normal');
-    g.missiles = [m];
-
-    g.lockedTarget = null;
-    g.fireInterceptor();
-    expect(g.interceptorList).toHaveLength(0); // no lock -> nothing
-    expect(g.interceptorWeapon.canLaunch).toBe(true); // reload not consumed
-
-    g.lockedTarget = m;
-    g.fireInterceptor();
-    expect(g.interceptorList).toHaveLength(1);
-    expect(g.interceptorWeapon.canLaunch).toBe(false); // reloading now
-
-    g.fireInterceptor();
-    expect(g.interceptorList).toHaveLength(1); // still reloading -> nothing
+    g.toSpawn = 0;
+    const launcherX = g.turrets[0].x + CONFIG.interceptor.launcherOffsetX;
+    const drone = new EnemyMissile(-30, 500, 900, g.groundY, 100, 0, 0, 'drone');
+    const stealth = new EnemyMissile(-30, 500, 900, g.groundY, 250, 0, 0, 'stealth');
+    const near = new EnemyMissile(launcherX, 100, launcherX, g.groundY, 150, 0, g.groundY, 'normal');
+    near.y = g.groundY - CONFIG.interceptor.launcherHeight - 50; // inside min dist
+    g.missiles = [drone, stealth, near];
+    g.interceptorWeapon.buy();
+    g.interceptorWeapon.timer = 0; // loaded — it must CHOOSE not to fire
+    g.updateInterceptorLauncher(1 / 60);
+    expect(g.interceptorList).toHaveLength(0);
+    expect(g.interceptorWeapon.canLaunch).toBe(true); // held its fire
   });
 
   it('detonation instakills everything in the blast and pays per kill', () => {
@@ -398,9 +397,15 @@ describe('Shop', () => {
     expect(g.credits).toBe(0);
   });
 
-  it('buys down the interceptor reload cooldown', () => {
+  it('sells the battery cheap, then reload upgrades', () => {
     const g = newGame();
     g.startGame();
+    g.credits = 50;
+    expect(g.interceptorWeapon.owned).toBe(false);
+    g.buyItem(find(g, 'Interceptor Battery'));
+    expect(g.interceptorWeapon.owned).toBe(true);
+    expect(g.credits).toBe(50 - CONFIG.shop.interceptorCost);
+    expect(find(g, 'Interceptor Battery')).toBeUndefined(); // replaced by reload row
     g.credits = 50;
     const cd0 = g.interceptorWeapon.cooldown;
     g.buyItem(find(g, 'Interceptor Reload'));
@@ -441,6 +446,7 @@ describe('Shop', () => {
     expect(g.ciws.fireInterval).toBeLessThan(fi0);
 
     // Max out the interceptor reload ladder.
+    g.interceptorWeapon.buy();
     for (let i = 0; i < CONFIG.shop.interceptorCooldownCosts.length; i++) {
       g.credits = 100000;
       const item = find(g, 'Interceptor Reload');
@@ -504,27 +510,14 @@ describe('Key routing (handleKey)', () => {
     expect(g.wave).toBe(2);
   });
 
-  it('Space launches an interceptor during play (with a lock)', () => {
+  it('Space does nothing during play (weapons are autonomous)', () => {
     const g = newGame();
     g.startGame();
-    const m = new EnemyMissile(700, 300, 700, g.groundY, 150, 0, g.groundY, 'normal');
-    g.missiles = [m];
-    g.lockedTarget = m;
+    const wave0 = g.wave;
     g.handleKey(' ');
-    expect(g.interceptorWeapon.canLaunch).toBe(false); // reload started
-    expect(g.interceptorList).toHaveLength(1);
-  });
-
-  it('Space does nothing while paused', () => {
-    const g = newGame();
-    g.startGame();
-    g.paused = true;
-    const m = new EnemyMissile(700, 300, 700, g.groundY, 150, 0, g.groundY, 'normal');
-    g.missiles = [m];
-    g.lockedTarget = m;
-    g.handleKey(' ');
+    expect(g.state).toBe('playing');
+    expect(g.wave).toBe(wave0);
     expect(g.interceptorList).toHaveLength(0);
-    expect(g.interceptorWeapon.canLaunch).toBe(true);
   });
 
   it('P toggles pause, and shop number keys buy items', () => {
@@ -537,8 +530,10 @@ describe('Key routing (handleKey)', () => {
 
     g.endWave();
     g.credits = 100;
+    g.handleKey('1'); // first shop row = Interceptor Battery (unowned)
+    expect(g.interceptorWeapon.owned).toBe(true);
     const cd0 = g.interceptorWeapon.cooldown;
-    g.handleKey('1'); // first shop row = Interceptor Reload
+    g.handleKey('1'); // row becomes Interceptor Reload once owned
     expect(g.interceptorWeapon.cooldown).toBeLessThan(cd0);
   });
 });
@@ -683,141 +678,43 @@ describe('Gun shield (shop upgrade ladder)', () => {
   });
 });
 
-describe('AI gunner mode', () => {
+describe('Autonomous CIWS', () => {
   const inRange = (g) =>
     new EnemyMissile(g.turrets[0].x, g.groundY - 200, g.turrets[0].x, g.groundY, 180, 0, g.groundY, 'normal');
 
-  it('startGame applies the requested mode', () => {
+  it('fires on its own while visible threats are up', () => {
     const g = newGame();
-    g.startGame('aiGunner');
-    expect(g.mode).toBe('aiGunner');
-    g.startGame('manual');
-    expect(g.mode).toBe('manual');
-  });
-
-  it('startGame() defaults to the menu selection', () => {
-    const g = newGame();
-    g.menuMode = 'aiGunner';
     g.startGame();
-    expect(g.mode).toBe('aiGunner');
-  });
-
-  it('the auto-gun fires at an in-range threat without the trigger held', () => {
-    const g = newGame();
-    g.startGame('aiGunner');
-    const m = inRange(g);
-    g.missiles = [m];
     g.toSpawn = 0;
-    g.update(1 / 60);
-    expect(g.bullets.length).toBeGreaterThan(0);
-    expect(g.bullets.some((b) => b.targetId === m.id)).toBe(true);
-    expect(g.aiGunTarget).toBe(m);
-  });
-
-  it('pours a burst (well over 2 rounds) into a held target', () => {
-    const g = newGame();
-    g.startGame('aiGunner');
-    const m = inRange(g);
-    g.missiles = [m];
-    g.toSpawn = 0;
-    // Freeze the missile in place and never let bullets connect, so we measure
-    // the burst the AI commits to one target before it's destroyed.
-    m.update = () => null;
-    g.checkCollisions = () => {};
-    for (let i = 0; i < 40; i++) g.update(1 / 60);
-    const atTarget = g.bullets.filter((b) => b.targetId === m.id).length;
-    expect(atTarget).toBeGreaterThan(2);
-    expect(atTarget).toBe(m.hp + CONFIG.ai.overkillBuffer); // capped burst length
-  });
-
-  it('the barrel slews at a limited rate (no instant snap across the sky)', () => {
-    const g = newGame();
-    g.startGame('aiGunner');
-    const t = g.turrets[0];
-    g.activeTurret = t; // updateAutoGun is called directly here
-    t.angle = -Math.PI / 2; // pointing up
-    // a target far to one side requiring a big swing
-    const m = new EnemyMissile(t.x + 600, g.groundY - 100, t.x + 600, g.groundY, 180, 0, g.groundY, 'normal');
-    g.aiGunTarget = m;
-    g.missiles = [m];
-    const before = t.angle;
-    g.updateAutoGun(1 / 60);
-    const moved = Math.abs(t.angle - before);
-    expect(moved).toBeGreaterThan(0); // it does turn
-    expect(moved).toBeLessThanOrEqual(CONFIG.ai.turnRate * (1 / 60) + 1e-9); // but capped
-  });
-
-  it('stays locked on its target across frames while it is valid', () => {
-    const g = newGame();
-    g.startGame('aiGunner');
-    const m = inRange(g);
-    g.missiles = [m];
-    g.toSpawn = 0;
-    g.update(1 / 60);
-    expect(g.aiGunTarget).toBe(m);
-    g.update(1 / 60);
-    expect(g.aiGunTarget).toBe(m); // persistence — same target
-  });
-
-  it('manual mode fires only while the trigger is held', () => {
-    const g = newGame();
-    g.startGame('manual');
-    g.toSpawn = 0;
-    g.update(1 / 60);
-    expect(g.bullets.length).toBe(0); // trigger not held
-    g.firing = true;
+    g.missiles = [inRange(g)];
     g.update(1 / 60);
     expect(g.bullets.length).toBeGreaterThan(0);
   });
 
-  it('the auto-gun holds fire on a target that already has enough rounds inbound', () => {
+  it('holds fire when the sky is clear or only cloaked threats remain', () => {
     const g = newGame();
-    g.startGame('aiGunner');
-    const m = inRange(g);
-    const inbound = new Map([[m.id, m.hp + CONFIG.ai.overkillBuffer]]);
-    g.missiles = [m];
-    expect(g.pickGunTarget(g.turrets[0], inbound)).toBeNull();
+    g.startGame();
+    g.toSpawn = 0;
+    g.missiles = [];
+    g.update(1 / 60);
+    expect(g.bullets.length).toBe(0); // empty sky
+
+    g.missiles = [new EnemyMissile(-30, 500, 900, g.groundY, 250, 0, 0, 'stealth')];
+    g.update(1 / 60);
+    expect(g.bullets.length).toBe(0); // a cloaked stealth doesn't count
   });
 
-  it('the lead solution aims ahead of a crossing target', () => {
+  it('aims wherever the cursor points', () => {
     const g = newGame();
-    g.startGame('aiGunner');
+    g.startGame();
+    g.mouseX = 100;
+    g.mouseY = 100;
+    g.update(1 / 60);
     const t = g.turrets[0];
-    const m = new EnemyMissile(t.x - 300, g.groundY - 400, t.x, g.groundY, 200, 0, g.groundY, 'normal');
-    m.vx = 200; // moving to the right
-    m.vy = 50;
-    const lead = g.leadSolution(t, m);
-    expect(lead.x).toBeGreaterThan(m.x); // lead in the direction of travel
+    const want = Math.atan2(100 - t.y, 100 - t.x);
+    expect(Math.abs(t.angle - want)).toBeLessThan(1e-9);
   });
-
-  it('engages threats at any range (no minimum distance gate)', () => {
-    const g = newGame();
-    g.startGame('aiGunner');
-    // A far, high corner threat — well beyond the old engage range.
-    const far = new EnemyMissile(20, -10, 20, g.groundY, 180, 0, g.groundY, 'normal');
-    g.missiles = [far];
-    expect(g.pickGunTarget(g.turrets[0], new Map())).toBe(far);
-  });
-
-  it('menu keys 1/2 select the role', () => {
-    const g = newGame();
-    g.state = 'menu';
-    g.handleKey('2');
-    expect(g.menuMode).toBe('aiGunner');
-    g.handleKey('1');
-    expect(g.menuMode).toBe('manual');
-  });
-
-  it('clicking a role card on the menu deploys that mode', () => {
-    const g = newGame();
-    g.state = 'menu';
-    g._menuRects = [{ x: 0, y: 0, w: 100, h: 50, mode: 'aiGunner' }];
-    g.handleMenuClick(10, 10);
-    expect(g.mode).toBe('aiGunner');
-    expect(g.state).toBe('playing');
-  });
-});
-
+})
 describe('New threats', () => {
   it('cruise missiles fly level, pop up, then dive onto the target', () => {
     const g = newGame();
@@ -863,21 +760,22 @@ describe('New threats', () => {
     expect(m.type).toBe('stealth');
     expect(m.stealthed).toBe(true);
 
-    // Cloaked: no player lock, and the AI gunner can't see it either.
-    g.mouseX = m.x;
-    g.mouseY = m.y;
-    g.acquireLock();
-    expect(g.lockedTarget).toBeNull();
-    expect(g.pickGunTarget(g.turrets[0], new Map())).toBeNull();
+    // Cloaked: the autonomous launcher can't see it.
+    g.toSpawn = 0;
+    g.interceptorWeapon.buy();
+    g.interceptorWeapon.timer = 0;
+    g.updateInterceptorLauncher(1 / 60);
+    expect(g.interceptorList).toHaveLength(0);
 
-    // Fly it to the pop-up: the cloak drops and it becomes lockable.
+    // Fly it to the pop-up: the cloak drops and it becomes targetable.
     let guard = 0;
     while (m.wpIndex === 0 && !m.dead && guard++ < 6000) m.update(1 / 60, g.groundY);
     expect(m.stealthed).toBe(false);
-    g.mouseX = m.x;
-    g.mouseY = m.y;
-    g.acquireLock();
-    expect(g.lockedTarget).toBe(m);
+    g.interceptorWeapon.buy();
+    g.interceptorWeapon.timer = 0;
+    g.updateInterceptorLauncher(1 / 60);
+    expect(g.interceptorList).toHaveLength(1);
+    expect(g.interceptorList[0].target).toBe(m);
   });
 
   it('side-entry flyers always terminate (no orbiting a waypoint forever)', () => {
@@ -926,10 +824,12 @@ describe('New threats', () => {
     nuke.x = 700;
     nuke.y = 300;
     g.detonateInterceptor({ x: 700, y: 300 });
-    expect(nuke.dead).toBe(false); // survived the first blast
+    expect(nuke.dead).toBe(false); // shrugs off a blast
     expect(nuke.hp).toBe(CONFIG.missile.hp.nuke - CONFIG.interceptor.blastDamage);
-    g.detonateInterceptor({ x: 700, y: 300 });
-    expect(nuke.dead).toBe(true); // second blast finishes it
+    const needed = Math.ceil(CONFIG.missile.hp.nuke / CONFIG.interceptor.blastDamage);
+    expect(needed).toBeGreaterThanOrEqual(5); // interceptors alone can't realistically stop it
+    for (let i = 1; i < needed; i++) g.detonateInterceptor({ x: 700, y: 300 });
+    expect(nuke.dead).toBe(true);
   });
 
   it('nukes are capped per wave', () => {
@@ -962,7 +862,7 @@ describe('Laser', () => {
     g.laser.buy();
     const high = new EnemyMissile(300, 100, 300, g.groundY, 150, 0, g.groundY, 'normal');
     const low = new EnemyMissile(900, 100, 900, g.groundY, 150, 0, g.groundY, 'normal');
-    low.y = 500;
+    low.y = g.groundY - 380; // low in the sky, inside the laser's reach
     g.missiles = [high, low];
     const credits0 = g.credits;
 
@@ -1110,11 +1010,12 @@ describe('Interceptor retasking', () => {
     const g = newGame();
     g.startGame();
     g.toSpawn = 0;
-    const a = new EnemyMissile(700, 300, 700, g.groundY, 150, 0, g.groundY, 'normal');
+    const a = new EnemyMissile(700, 200, 700, g.groundY, 150, 0, g.groundY, 'normal');
     const b = new EnemyMissile(760, 320, 760, g.groundY, 150, 0, g.groundY, 'normal');
     g.missiles = [a, b];
-    g.lockedTarget = a;
-    g.fireInterceptor();
+    g.interceptorWeapon.buy();
+    g.interceptorWeapon.timer = 0;
+    g.updateInterceptorLauncher(1 / 60); // auto-launches at the farther threat
     const it = g.interceptorList[0];
     expect(it.target).toBe(a);
     a.dead = true; // gunned down mid-flight
@@ -1129,8 +1030,9 @@ describe('Interceptor retasking', () => {
     g.toSpawn = 0;
     const a = new EnemyMissile(700, 300, 700, g.groundY, 150, 0, g.groundY, 'normal');
     g.missiles = [a];
-    g.lockedTarget = a;
-    g.fireInterceptor();
+    g.interceptorWeapon.buy();
+    g.interceptorWeapon.timer = 0;
+    g.updateInterceptorLauncher(1 / 60);
     const it = g.interceptorList[0];
     a.dead = true;
     g.missiles = [];
@@ -1143,8 +1045,10 @@ describe('Interceptor retasking', () => {
     g.startGame();
     const m = new EnemyMissile(100, 800, 100, g.groundY, 150, 0, g.groundY, 'normal');
     g.missiles = [m];
-    g.lockedTarget = m;
-    g.fireInterceptor();
+    g.toSpawn = 0;
+    g.interceptorWeapon.buy();
+    g.interceptorWeapon.timer = 0;
+    g.updateInterceptorLauncher(1 / 60);
     const it = g.interceptorList[0];
     expect(it.vx).toBe(0); // vertical cold launch
     expect(it.vy).toBeLessThan(0); // (sim +y is down)

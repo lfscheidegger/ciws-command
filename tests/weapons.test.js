@@ -89,15 +89,21 @@ describe('CIWSWeapon', () => {
 });
 
 describe('InterceptorWeapon', () => {
-  it('starts ready, at the base cooldown', () => {
+  it('does nothing until bought; buying fields it fully loaded', () => {
     const w = new InterceptorWeapon();
+    expect(w.owned).toBe(false);
+    expect(w.canLaunch).toBe(false);
+    expect(w.launch(0, 0, null)).toBeNull(); // not fielded yet
+    w.buy();
+    expect(w.owned).toBe(true);
+    expect(w.canLaunch).toBe(true); // fresh from the factory: loaded
     expect(w.cooldown).toBe(CONFIG.interceptor.cooldowns[0]);
-    expect(w.canLaunch).toBe(true);
-    expect(w.reloadFrac).toBe(0);
   });
 
   it('launching starts the reload; a second launch is refused until ready', () => {
     const w = new InterceptorWeapon();
+    w.buy();
+    w.timer = 0;
     const it = w.launch(0, 0, null);
     expect(it).toBeInstanceOf(Interceptor);
     expect(w.canLaunch).toBe(false);
@@ -107,11 +113,14 @@ describe('InterceptorWeapon', () => {
     expect(w.launch(0, 0, null)).toBeInstanceOf(Interceptor);
   });
 
-  it('refill makes it ready immediately (start of wave)', () => {
+  it('refill leaves the pod UNLOADED (waves start one reload from a shot)', () => {
     const w = new InterceptorWeapon();
-    w.launch(0, 0, null);
-    expect(w.canLaunch).toBe(false);
+    w.buy();
+    w.timer = 0;
+    expect(w.canLaunch).toBe(true); // loaded
     w.refill();
+    expect(w.canLaunch).toBe(false); // wave start: reloading
+    w.update(w.cooldown);
     expect(w.canLaunch).toBe(true);
   });
 

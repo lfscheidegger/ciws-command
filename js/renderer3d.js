@@ -976,8 +976,11 @@ export class Renderer {
             ? 2.2
             : 0.25 + game.laser.chargeFrac * 1.3;
         }
-        // Launcher: the ready missile's tip shows whenever a launch is up.
-        ud.launcherGroup.visible = true;
+        // Launcher truck appears once bought; the ready missile's tip shows
+        // whenever a launch is up.
+        ud.launcherGroup.visible = !!(
+          game.interceptorWeapon && game.interceptorWeapon.owned
+        );
         ud.readyMissile.visible = !!(
           game.interceptorWeapon && game.interceptorWeapon.canLaunch
         );

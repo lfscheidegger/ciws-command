@@ -109,17 +109,20 @@ export class Bullet {
     this.y = y;
     this.vx = Math.cos(angle) * s;
     this.vy = Math.sin(angle) * s;
+    this.climbing = this.vy < 0; // fired upward (sim +y is down)
     this.life = CONFIG.bullet.lifetime;
     this.dead = false;
   }
 
   update(dt, groundY) {
-    // Drag (denser air lower down) then gravity, so rounds slow and arc. CIWS
-    // rounds feel amplified gravity for a more pronounced drop.
+    // Drag (denser air lower down) then gravity, so rounds slow and arc.
     applyDrag(this, CONFIG.physics.bulletDrag, airDensity(this.y, groundY), dt);
     this.vy += CONFIG.physics.gravity * CONFIG.physics.bulletGravityMul * dt;
     this.x += this.vx * dt;
     this.y += this.vy * dt;
+    // A round fired upward self-destructs at apogee — no tracers raining
+    // back down on the cities.
+    if (this.climbing && this.vy >= 0) this.dead = true;
     this.life -= dt;
     if (this.life <= 0) this.dead = true;
   }
@@ -389,13 +392,18 @@ export class Interceptor {
     this.vx = Math.cos(ang) * speed;
     this.vy = Math.sin(ang) * speed;
 
-    // Boost phase: thrust along the heading. Coast phase: gravity + drag.
+    // Boost phase: thrust along the heading. Coast phase: gravity + drag,
+    // plus extra energy scrubbed off by every radian of turning — hard
+    // maneuvering against a crossing target genuinely costs speed.
     this.boosting = this.age < cfg.boostTime;
     if (this.boosting) {
       speed = Math.min(cfg.maxSpeed, speed + cfg.thrust * dt);
       this.vx = Math.cos(ang) * speed;
       this.vy = Math.sin(ang) * speed;
     } else {
+      const bleed = 1 - Math.min(0.9, cfg.turnBleed * Math.abs(diff));
+      this.vx *= bleed;
+      this.vy *= bleed;
       this.vy += CONFIG.physics.gravity * dt;
       applyDrag(this, CONFIG.physics.interceptorDrag, airDensity(this.y, groundY), dt);
     }
@@ -414,6 +422,12 @@ export class Interceptor {
     if (this.target && dist(this.x, this.y, this.target.x, this.target.y) <= cfg.detonateRadius) {
       this.dead = true;
       return 'detonate';
+    }
+    // Out of maneuvering energy: too slow to chase anything down, so the
+    // round destroys itself rather than wallowing across the sky.
+    if (!this.boosting && Math.hypot(this.vx, this.vy) < cfg.minSpeed) {
+      this.dead = true;
+      return this.target ? 'detonate' : 'fizzle';
     }
     // Ground contact ends the flight — no skimming through the dirt for
     // another pass. With a live target the warhead fuzes on impact; without

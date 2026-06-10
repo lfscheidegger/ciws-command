@@ -211,6 +211,37 @@ describe('Interceptor', () => {
     expect(it.dead).toBe(true);
   });
 
+  it('turning during coast scrubs extra speed (maneuvering costs energy)', () => {
+    const behind = { x: 0, y: 800, dead: false };
+    const turner = new Interceptor(700, 800, behind);
+    turner.age = CONFIG.interceptor.boostTime + 1; // coasting
+    turner.vx = 800;
+    turner.vy = 0; // flying away from the target: max-rate turn required
+    turner.update(1 / 60, G);
+
+    const ahead = { x: 5000, y: 800, dead: false };
+    const straight = new Interceptor(700, 800, ahead);
+    straight.age = CONFIG.interceptor.boostTime + 1;
+    straight.vx = 800;
+    straight.vy = 0; // already aligned: no turn
+    straight.update(1 / 60, G);
+
+    expect(Math.hypot(turner.vx, turner.vy)).toBeLessThan(
+      Math.hypot(straight.vx, straight.vy)
+    );
+  });
+
+  it('self-destructs once maneuvering energy drops below the floor', () => {
+    const target = { x: 100, y: 100, dead: false };
+    const it = new Interceptor(700, 800, target);
+    it.age = CONFIG.interceptor.boostTime + 1; // coasting
+    it.vx = CONFIG.interceptor.minSpeed - 60;
+    it.vy = 0;
+    const r = it.update(1 / 60, G);
+    expect(it.dead).toBe(true);
+    expect(r).toBe('detonate'); // pops its warhead rather than wallowing
+  });
+
   it('drops a dead target and fizzles with none left', () => {
     const target = { x: 700, y: 400, dead: false };
     const it = new Interceptor(700, G, target);

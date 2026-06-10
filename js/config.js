@@ -9,7 +9,9 @@ export const CONFIG = {
   // Fixed virtual resolution the simulation always runs at. The window can be
   // any size/shape; the camera scales this to fit (so balance never changes).
   // Large field => everything is relatively small and spread out (lots of air).
-  world: { width: 1400, height: 1000 },
+  // Tall field: threats appear well above the CIWS's comfortable envelope —
+  // you SEE them early, but up high only interceptors reach reliably.
+  world: { width: 1400, height: 1350 },
   groundHeight: 70, // height of the ground strip at the bottom
 
   // --- Physics ------------------------------------------------------------
@@ -20,9 +22,10 @@ export const CONFIG = {
     bulletGravityMul: 1.0, // CIWS rounds could feel extra gravity if > 1.0 (more visible drop)
     scaleHeight: 0.5, // density e-folds over this fraction of the play height
     densityFloor: 0.1, // minimum air density (way up high)
-    bulletDrag: 0.0006, // quadratic drag coeff for CIWS rounds
+    bulletDrag: 0.00035, // quadratic drag coeff for CIWS rounds — tuned so a
+    // straight-up burst just barely kisses the top of the field
     missileDrag: 0.0011, // drag coeff for enemy missiles (slows them down low)
-    interceptorDrag: 0.0006, // drag coeff for coasting interceptors
+    interceptorDrag: 0.0018, // drag coeff for coasting interceptors (bleeds energy fast)
   },
   cityCount: 6,
   turretCount: 1, // a single central CIWS — one hit on it loses the game
@@ -34,7 +37,7 @@ export const CONFIG = {
     baseRadius: 18,
     pivotHeight: 21, // height of the gun trunnion above the ground (sim px)
     startAmmo: Infinity, // the belt feed is endless — the gun never runs dry
-    fireInterval: 0.055, // seconds between rounds while firing (~18 rounds/s)
+    fireInterval: 0.038, // seconds between rounds while firing (~26 rounds/s)
     dispersionDeg: 0.8, // half-angle of the random firing cone (tight)
     twinSpacing: 8, // px between the two barrels once the twin upgrade is bought
   },
@@ -65,7 +68,7 @@ export const CONFIG = {
 
     // CIWS rounds needed to destroy each variant (tunable per type). A MIRV
     // carrier is armoured; once it splits, the children are regular 1-hit RVs.
-    hp: { normal: 1, evasive: 1, hypersonic: 1, mirv: 3, cruise: 2, stealth: 2, drone: 1, nuke: 14 },
+    hp: { normal: 1, evasive: 1, hypersonic: 1, mirv: 3, cruise: 2, stealth: 2, drone: 1, nuke: 40 },
     hitFlashTime: 0.12, // seconds the body flashes white on a non-killing hit
 
     // MIRV splitting. The carrier "bus" is larger and a distinct colour until
@@ -112,7 +115,7 @@ export const CONFIG = {
       fromWave: 2,
       chance: 0.1,
       speedFactor: 0.55,
-      groupSize: 6,
+      groupSize: 4,
       altFrac: [0.3, 0.6], // per-drone spawn altitude band
       diveDist: 200, // horizontal px before the target where the dive starts
       turnRate: 2.0,
@@ -144,11 +147,16 @@ export const CONFIG = {
     },
   },
 
-  // --- Interceptors (secondary weapon: lock-on homing anti-missile) -------
+  // --- Interceptors (autonomous homing anti-missiles) ---------------------
   interceptor: {
-    // Unlimited stock, gated by a reload cooldown instead. Index = upgrade
+    // Unlimited stock, gated by a reload cooldown; the launcher starts every
+    // wave UNLOADED (first shot comes one full reload in). Index = upgrade
     // level; buy levels in the shop to launch more often.
-    cooldowns: [5, 3.75, 2.75, 1.75, 1],
+    cooldowns: [6, 4.75, 3.75, 3, 2.4, 1.8, 1.4, 1],
+    // Auto-targeting: the launcher fires itself at the highest-value threat,
+    // biased toward distant ones. It never engages drones, and anything
+    // inside the minimum engagement distance is the gun's/laser's business.
+    minTargetDist: 240,
     launcherOffsetX: 46, // launcher emplacement sits right of the CIWS mount
     launcherHeight: 34, // top of the erected launch pod (missiles leave vertically)
     smokeRate: 50, // boost-phase exhaust puffs per second (white solid-motor smoke)
@@ -158,31 +166,22 @@ export const CONFIG = {
     thrust: 1700, // px/s^2 acceleration during boost (gentler ramp)
     maxSpeed: 1060, // speed cap (outpaces fast threats, but not by much)
     turnRate: 3.8, // rad/s homing turn rate (tighter turns, can still overshoot)
+    turnBleed: 0.45, // fraction of speed scrubbed per radian of post-boost turning
+    minSpeed: 240, // below this it lacks maneuvering energy and self-destructs
     detonateRadius: 24, // must pass this close to detonate (tighter => can miss)
     blastRadius: 72, // area damage radius on detonation
-    blastDamage: 7, // HP one blast strips from everything in radius (a 14-HP nuke takes two)
+    blastDamage: 7, // HP one blast strips from everything in radius — a 40-HP
+    // nuke shrugs off interceptors alone; the gun has to help or it lands
     lifetime: 5.0, // seconds before self-destruct
-    lockRadius: 110, // px from the crosshair to acquire a lock
     trailMaxPoints: 20,
     trailMinStep: 6,
-  },
-
-  // --- AI gunner mode (auto-CIWS; the player only directs interceptors) ----
-  ai: {
-    engageRange: 820, // slant px within which the auto-gun will open fire
-    leadIterations: 4, // intercept-time solve iterations
-    dropComp: 1.25, // fudge on the gravity-drop lead (drag lengthens flight)
-    overkillBuffer: 5, // extra rounds it pours into a target beyond its HP (longer bursts)
-    mirvDeprioritize: 0.5, // score mult for armoured MIRV buses (leave for interceptors)
-    turnRate: 5.0, // rad/s slew limit — the barrel can't snap across the sky instantly
-    aimTolerance: 0.05, // rad; only fires once the barrel is this close to the lead angle
   },
 
   // --- Laser (purchasable autonomous point-defense beam) ------------------
   laser: {
     cost: 70, // one-time purchase
-    upgradeCosts: [40, 65, 95], // recharge upgrades after it's owned
-    cooldowns: [6, 4.5, 3.2, 2.2], // recharge between burns, by upgrade level
+    upgradeCosts: [40, 65, 95, 140, 200], // recharge upgrades after it's owned
+    cooldowns: [6, 4.5, 3.2, 2.2, 1.5, 1], // recharge between burns, by upgrade level
     dps: 2.6, // HP/s burned at point-blank; falls off with distance
     fullPowerDist: 280, // beam burns at full dps inside this distance
     range: 720, // beyond this the laser can't latch on at all
@@ -200,8 +199,8 @@ export const CONFIG = {
   // --- Gun shield (a shop upgrade ladder; cities can't be shielded) -------
   shield: {
     // First purchase fits the dome on the CIWS; later ones speed its recharge.
-    costs: [55, 35, 55, 80],
-    rechargeTimes: [10, 7, 4.5, 2.5], // seconds to come back, by upgrade level
+    costs: [55, 35, 55, 80, 120, 170],
+    rechargeTimes: [10, 7, 4.5, 2.5, 1.6, 1], // seconds to come back, by upgrade level
     maxPerStructure: 1, // one shield at a time (no stacking)
     radius: 72, // dome radius (world units) — also the interception range
     flashTime: 0.4, // seconds the dome flares/collapses when it fails
@@ -229,7 +228,7 @@ export const CONFIG = {
     startCredits: 4,
     // Per-type kill bounty. A MIRV carrier pays its big bounty only while
     // unsplit; its children (and a post-split body) pay the normal rate.
-    bounty: { normal: 1, evasive: 2, hypersonic: 3, mirv: 4, cruise: 3, stealth: 4, drone: 1, nuke: 8 },
+    bounty: { normal: 1, evasive: 2, hypersonic: 3, mirv: 4, cruise: 3, stealth: 4, drone: 1, nuke: 12 },
     clearBonus: 5, // destroyed every enemy this wave (nothing leaked)
     perCitySurvived: 2, // credits per surviving city, end of wave
   },
@@ -238,10 +237,11 @@ export const CONFIG = {
   shop: {
     // Interceptor stock is unlimited; you buy down the reload cooldown.
     // Length = max upgrade levels (matches interceptor.cooldowns - 1).
-    interceptorCooldownCosts: [25, 45, 70, 110],
+    interceptorCost: 10, // buy the battery itself — cheap, the natural first purchase
+    interceptorCooldownCosts: [25, 45, 70, 110, 160, 220, 300],
     repairCityCost: 90, // cost to repair a destroyed city
-    fireRateCosts: [25, 40, 60],
-    fireRateFactor: 0.75, // fire interval multiplier per level
+    fireRateCosts: [25, 40, 60, 90, 130, 180],
+    fireRateFactor: 0.82, // fire interval multiplier per level
     twinBarrelCost: 80, // one-time: a second barrel firing side by side
   },
 
@@ -251,15 +251,16 @@ export const CONFIG = {
     // Camera frames the full play column: it fits a vertical half-extent of
     // coverFrac * playHeight around the centre, with a gentle downward tilt
     // (tiltFrac * playHeight) for depth. Distance is derived from the FOV.
-    coverFrac: 0.66,
-    widthMargin: 1.04, // horizontal fit margin (so edge cities aren't clipped)
-    tiltFrac: 0.1,
+    // 0.52 ≈ edge-to-edge vertically (the HUD lives in the side columns).
+    coverFrac: 0.52,
+    widthMargin: 1.02, // horizontal fit margin (so edge cities aren't clipped)
+    tiltFrac: 0.05,
     cityDepth: 18, // building extrusion depth (z)
     bloom: { strength: 0.55, radius: 0.6, threshold: 0.3 },
     maxParticles: 900,
     maxSmoke: 500,
     maxMissiles: 220,
-    maxBullets: 280,
+    maxBullets: 700, // headroom for a max-fire-rate twin-barrel stream
     maxInterceptors: 16,
     maxExplosions: 24, // pooled fireball/shockwave effects
     exposure: 1.05,
