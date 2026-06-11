@@ -111,6 +111,7 @@ export class Game {
         window.matchMedia('(pointer: coarse)').matches) ||
       'ontouchstart' in window;
     this.padRect = null; // screen rect of the pad (touch mode only)
+    this.shopSelected = 0; // touch armory: which row the detail panel shows
 
     // Secret dev console (backquote). Scenario sandboxes loop one threat type
     // for observation; the toggles survive restarts so a whole test session
@@ -459,6 +460,7 @@ export class Game {
     this.interceptorList = [];
     this.nextWave = this.wave + 1;
     this.state = 'intermission';
+    this.shopSelected = 0; // touch armory: detail panel opens on the top item
     this.laserBeamLive = null;
     this.laser.target = null;
     // A cleared wave is a checkpoint — closing the tab at the armory (or any
@@ -1847,6 +1849,9 @@ export class Game {
 
   drawHUD(ctx) {
     if (this.state === 'menu') return;
+    // The touch armory owns the whole screen (its header shows the credits);
+    // the corner HUD would collide with it on a phone.
+    if (this.state === 'intermission' && this.touchMode) return;
     // Make it impossible to mistake a doctored run for a real one.
     if (this.devScenario || this.devInvincible) {
       this.text(T.dev.badge, this.screenW / 2, 20, {
@@ -2224,6 +2229,32 @@ export class Game {
   /** Deterministic layout for the shop rows + the proceed button. */
   shopLayout() {
     const items = this.getShopItems();
+
+    // Touch armory: compact rows up top, a detail panel for the selected
+    // item, and two big thumb buttons (BUY / NEXT WAVE) along the bottom —
+    // hover doesn't exist, so inspection is tap-to-select + explicit buy.
+    if (this.touchMode) {
+      const panelW = Math.min(520, this.screenW - 24);
+      const x = this.screenW / 2 - panelW / 2;
+      const top = this.screenH * 0.19;
+      const rowH = 44;
+      const gap = 7;
+      const rows = items.map((item, i) => ({
+        item,
+        x,
+        y: top + i * (rowH + gap),
+        w: panelW,
+        h: rowH,
+      }));
+      const lastY = top + items.length * (rowH + gap);
+      const btnH = 50;
+      const btnY = this.screenH - btnH - 14;
+      const btnW = (panelW - 12) / 2;
+      const buyRect = { x, y: btnY, w: btnW, h: btnH };
+      const nextRect = { x: x + btnW + 12, y: btnY, w: btnW, h: btnH };
+      return { rows, nextRect, buyRect, detailTop: lastY + 10 };
+    }
+
     const panelW = Math.min(480, this.screenW - 16);
     const x = this.screenW / 2 - panelW / 2;
     const top = this.screenH * 0.3;
@@ -2264,14 +2295,21 @@ export class Game {
   }
 
   handleShopClick(px, py) {
-    const { rows, nextRect } = this.shopLayout();
+    const { rows, nextRect, buyRect } = this.shopLayout();
     if (this._inRect(px, py, nextRect)) {
       this.proceedToNextWave();
       return;
     }
-    for (const r of rows) {
-      if (this._inRect(px, py, r)) {
-        this.buyItem(r.item);
+    // Touch: a row tap SELECTS (shows the detail panel); the BUY button is
+    // the only thing that spends — no accidental purchases under a thumb.
+    if (buyRect && this._inRect(px, py, buyRect)) {
+      this.buyItem(rows[this.shopSelected]?.item);
+      return;
+    }
+    for (let i = 0; i < rows.length; i++) {
+      if (this._inRect(px, py, rows[i])) {
+        if (this.touchMode) this.shopSelected = i;
+        else this.buyItem(rows[i].item);
         return;
       }
     }
@@ -2376,16 +2414,18 @@ export class Game {
 
   drawShop(ctx) {
     const cx = this.screenW / 2;
+    const touch = this.touchMode;
     this.dim(ctx, 0.6);
-    this.text(T.shop.waveCleared(this.wave), cx, this.screenH * 0.15, {
-      size: 38,
+    const headY = this.screenH * (touch ? 0.07 : 0.15);
+    this.text(T.shop.waveCleared(this.wave), cx, headY, {
+      size: touch ? 26 : 38,
       align: 'center',
       weight: 'bold',
       color: C.city,
       glow: true,
     });
-    this.text(T.shop.creditsLine(this.credits, this.waveEarned), cx, this.screenH * 0.15 + 34, {
-      size: 18,
+    this.text(T.shop.creditsLine(this.credits, this.waveEarned), cx, headY + (touch ? 24 : 34), {
+      size: touch ? 14 : 18,
       align: 'center',
       color: C.credits,
     });
@@ -2396,49 +2436,74 @@ export class Game {
         b.clear > 0 ? T.shop.breakdownClear(b.clear) : T.shop.breakdownClearMissed,
         T.shop.breakdownCities(b.city),
       ];
-      this.text(parts.join('     '), cx, this.screenH * 0.15 + 58, {
-        size: 13,
+      this.text(parts.join('     '), cx, headY + (touch ? 42 : 58), {
+        size: touch ? 11 : 13,
         align: 'center',
         color: C.hudDim,
       });
     }
-    this.text(T.shop.heading, cx, this.screenH * 0.3 - 16, {
-      size: 13,
+    this.text(touch ? T.shop.touchHeading : T.shop.heading, cx, this.screenH * (touch ? 0.19 : 0.3) - 16, {
+      size: touch ? 11 : 13,
       align: 'center',
       color: C.hudDim,
     });
 
-    const { rows, nextRect } = this.shopLayout();
+    const { rows, nextRect, buyRect, detailTop } = this.shopLayout();
+    this.shopSelected = clamp(this.shopSelected, 0, rows.length - 1);
     rows.forEach((r, i) => {
       const it = r.item;
-      const hover = it.enabled && this._inRect(this.pointerX, this.pointerY, r);
+      const selected = touch && i === this.shopSelected;
+      const hover = !touch && it.enabled && this._inRect(this.pointerX, this.pointerY, r);
       ctx.fillStyle = it.enabled
-        ? hover
+        ? hover || selected
           ? C.shopRowHover
           : C.shopRow
+        : selected
+        ? 'rgba(60,80,110,0.45)'
         : 'rgba(40,58,86,0.22)';
       this._roundRect(ctx, r.x, r.y, r.w, r.h, 6);
       ctx.fill();
+      if (selected) {
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = C.crosshair;
+        this._roundRect(ctx, r.x, r.y, r.w, r.h, 6);
+        ctx.stroke();
+      }
 
       const labelCol = it.enabled ? C.hud : C.hudDim;
-      this.text(`${i + 1}`, r.x + 18, r.y + r.h / 2 + 5, {
-        size: 15,
-        align: 'center',
-        color: it.enabled ? C.crosshair : C.hudDim,
-      });
-      this.text(it.label, r.x + 40, r.y + 20, { size: 16, color: labelCol, weight: 'bold' });
-      this.text(it.desc, r.x + 40, r.y + 38, { size: 12, color: C.hudDim });
+      if (!touch) {
+        this.text(`${i + 1}`, r.x + 18, r.y + r.h / 2 + 5, {
+          size: 15,
+          align: 'center',
+          color: it.enabled ? C.crosshair : C.hudDim,
+        });
+      }
+      const tx0 = touch ? r.x + 14 : r.x + 40;
+      if (touch) {
+        // Compact row: just the name and the price; the desc + full info
+        // live in the detail panel below.
+        this.text(it.label, tx0, r.y + r.h / 2 + 5, { size: 14, color: labelCol, weight: 'bold' });
+      } else {
+        this.text(it.label, tx0, r.y + 20, { size: 16, color: labelCol, weight: 'bold' });
+        this.text(it.desc, tx0, r.y + 38, { size: 12, color: C.hudDim });
+      }
 
       let right;
       if (it.cost == null) right = T.shop.maxedOut;
       else if (it.soldOut) right = T.shop.soldOut;
       else right = T.shop.price(it.cost);
       this.text(right, r.x + r.w - 16, r.y + r.h / 2 + 5, {
-        size: 16,
+        size: touch ? 14 : 16,
         align: 'right',
         color: it.enabled ? C.credits : C.hudDim,
       });
     });
+
+    // Touch: detail panel for the selected item + a dedicated BUY button.
+    if (touch) {
+      this.drawShopDetail(ctx, rows[this.shopSelected], detailTop, buyRect, nextRect);
+      return;
+    }
 
     // Hover tooltip: a side panel with the full explanation of the item
     // under the cursor (hovering works whether or not you can afford it).
@@ -2485,6 +2550,63 @@ export class Game {
       size: 12,
       align: 'center',
       color: C.hudDim,
+    });
+  }
+
+  /** Touch armory: the selected item's full story + BUY / NEXT WAVE buttons. */
+  drawShopDetail(ctx, row, detailTop, buyRect, nextRect) {
+    if (!row) return;
+    const it = row.item;
+    const x = row.x;
+    const w = row.w;
+    // Both text blocks wrap to the panel; the panel hugs its content rather
+    // than stretching down to the buttons.
+    const descLines = this._wrapText(ctx, it.desc, w - 24, 12.5);
+    const infoLines = it.info ? this._wrapText(ctx, it.info, w - 24, 12) : [];
+    const maxH = Math.max(40, buyRect.y - 12 - detailTop);
+    const panelH = Math.min(maxH, 14 + descLines.length * 18 + infoLines.length * 16 + 10);
+    ctx.fillStyle = C.shopPanel;
+    this._roundRect(ctx, x, detailTop, w, panelH, 6);
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(120,150,190,0.5)';
+    this._roundRect(ctx, x, detailTop, w, panelH, 6);
+    ctx.stroke();
+    let ty = detailTop + 22;
+    for (const l of descLines) {
+      if (ty > detailTop + panelH - 6) break;
+      this.text(l, x + 12, ty, { size: 12.5, weight: 'bold', color: C.hud });
+      ty += 18;
+    }
+    for (const l of infoLines) {
+      if (ty > detailTop + panelH - 6) break; // never overflow the panel
+      this.text(l, x + 12, ty, { size: 12, color: C.hudDim });
+      ty += 16;
+    }
+
+    // BUY: the only thing that spends money on touch. Label tracks state.
+    let buyLabel;
+    if (it.cost == null) buyLabel = T.shop.buyMaxed;
+    else if (it.soldOut) buyLabel = T.shop.buyOwned;
+    else buyLabel = T.shop.buy(it.cost);
+    ctx.fillStyle = it.enabled ? 'rgba(108,240,255,0.85)' : 'rgba(80,100,125,0.35)';
+    this._roundRect(ctx, buyRect.x, buyRect.y, buyRect.w, buyRect.h, 6);
+    ctx.fill();
+    this.text(buyLabel, buyRect.x + buyRect.w / 2, buyRect.y + buyRect.h / 2 + 5, {
+      size: 15,
+      align: 'center',
+      weight: 'bold',
+      color: it.enabled ? '#08222a' : C.hudDim,
+    });
+
+    ctx.fillStyle = 'rgba(255,179,71,0.85)';
+    this._roundRect(ctx, nextRect.x, nextRect.y, nextRect.w, nextRect.h, 6);
+    ctx.fill();
+    this.text(T.shop.nextWave, nextRect.x + nextRect.w / 2, nextRect.y + nextRect.h / 2 + 5, {
+      size: 15,
+      align: 'center',
+      weight: 'bold',
+      color: '#161008',
     });
   }
 

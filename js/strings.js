@@ -101,6 +101,11 @@ export const STRINGS = {
     price: (cost) => `${cost} cr`,
     nextWave: 'NEXT WAVE ▸',
     nextWaveHint: 'or press SPACE',
+    // Touch armory: tap a row to inspect it, then buy with an explicit button.
+    touchHeading: 'ARMORY — tap an item for details',
+    buy: (cost) => `BUY — ${cost} cr`,
+    buyMaxed: 'MAXED OUT',
+    buyOwned: 'OWNED',
 
     items: {
       interceptor: {

@@ -46,6 +46,49 @@ describe('Touch mode layout', () => {
     expect(g.mouseY).toBe(g.groundY);
   });
 
+  it('armory: a row tap selects, only the BUY button spends', () => {
+    const g = newGame();
+    g.setTouchMode(true);
+    g.startGame();
+    g.credits = 500;
+    g.endWave(); // -> intermission, selection reset to the top row
+    expect(g.state).toBe('intermission');
+    expect(g.shopSelected).toBe(0);
+
+    const { rows, buyRect, nextRect } = g.shopLayout();
+    expect(buyRect).toBeDefined();
+
+    // Tapping a row selects it — and does NOT buy.
+    const cr0 = g.credits;
+    g.handleShopClick(rows[2].x + 10, rows[2].y + 10);
+    expect(g.shopSelected).toBe(2);
+    expect(g.credits).toBe(cr0);
+
+    // The BUY button purchases the selected item.
+    g.handleShopClick(rows[0].x + 10, rows[0].y + 10); // interceptor row
+    const item = g.shopLayout().rows[0].item;
+    expect(item.enabled).toBe(true);
+    g.handleShopClick(buyRect.x + 10, buyRect.y + 10);
+    expect(g.credits).toBe(cr0 - item.cost);
+    expect(g.interceptorWeapon.owned).toBe(true);
+
+    // NEXT WAVE proceeds.
+    g.handleShopClick(nextRect.x + 10, nextRect.y + 10);
+    expect(g.state).toBe('playing');
+  });
+
+  it('armory: desktop click-to-buy is unchanged', () => {
+    const g = newGame();
+    g.startGame();
+    g.credits = 500;
+    g.endWave();
+    const { rows, buyRect } = g.shopLayout();
+    expect(buyRect).toBeUndefined(); // no touch buttons on desktop
+    const cr0 = g.credits;
+    g.handleShopClick(rows[0].x + 10, rows[0].y + 10);
+    expect(g.credits).toBeLessThan(cr0); // bought directly
+  });
+
   it('the dev console exposes a touch toggle', () => {
     const g = newGame();
     g.handleKey('`');
