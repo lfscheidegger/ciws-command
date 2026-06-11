@@ -32,6 +32,17 @@ export const STRINGS = {
   ],
   keysHint: 'P pause     R restart     M mute',
   deploy: 'CLICK OR PRESS SPACE TO DEPLOY',
+
+  // --- Touch / mobile variants ----------------------------------------------
+  touch: {
+    deploy: 'TAP TO DEPLOY',
+    // Replaces the AIM row of HOW TO PLAY on touch devices.
+    howToAim: [
+      'AIM',
+      'Drag on the fire-control pad below the field to lay the gun — your thumb never covers the action.',
+    ],
+    padLabel: 'FIRE CONTROL',
+  },
   // Shown instead of `deploy` when a saved run is waiting to be resumed.
   menu: {
     continueRun: (wave) => `CONTINUE — WAVE ${wave}`,
@@ -179,6 +190,7 @@ export const STRINGS = {
     badge: 'DEV', // on-screen tag while god mode / a sandbox is active
     godMode: 'God mode — cities & gun are invincible',
     loadout: 'Sandbox loadout — start with interceptor + laser',
+    touchControls: 'Touch controls — fire-control pad below the field',
     exitSandbox: 'Exit sandbox (back to menu)',
     on: 'ON',
     off: 'OFF',

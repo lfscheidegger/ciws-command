@@ -50,6 +50,7 @@ marked with a DEV badge and never touch the high-score table.
 | Input | Action |
 |-------|--------|
 | Mouse move | Aim the CIWS — it fires on its own while threats are inbound |
+| Touch (mobile) | Drag on the **fire-control pad** below the field — a radar repeater with absolute aim mapping, so your thumb never covers the action (touching the field directly also aims) |
 | `P` | Pause / resume |
 | `R` | Restart |
 | `M` | Mute / unmute |

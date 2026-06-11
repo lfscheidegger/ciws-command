@@ -103,6 +103,15 @@ export class Game {
     this.shakeTime = 0;
     this.shakeMag = 0;
 
+    // Touch devices aim from a fire-control pad docked below the field, so a
+    // thumb never covers the action. Detected up front; the dev console can
+    // toggle it for desktop testing.
+    this.touchMode =
+      (typeof window.matchMedia === 'function' &&
+        window.matchMedia('(pointer: coarse)').matches) ||
+      'ontouchstart' in window;
+    this.padRect = null; // screen rect of the pad (touch mode only)
+
     // Secret dev console (backquote). Scenario sandboxes loop one threat type
     // for observation; the toggles survive restarts so a whole test session
     // can run invincible.
@@ -147,8 +156,49 @@ export class Game {
     }
     this.hctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+    // Touch: dock the fire-control pad below the field and letterbox the
+    // scene upward to clear it (the renderer reserves a bottom inset).
+    let inset = 0;
+    if (this.touchMode) {
+      const P = CONFIG.ui.touchPad;
+      const padH = Math.min(P.maxHeight, Math.round(this.screenH * P.heightFrac));
+      const padW = this.screenW - P.margin * 2;
+      this.padRect = {
+        x: P.margin,
+        y: this.screenH - P.bottomMargin - padH,
+        w: padW,
+        h: padH,
+      };
+      inset = padH + P.bottomMargin + 8;
+    } else {
+      this.padRect = null;
+    }
+    if (typeof this.renderer.setBottomInset === 'function') {
+      this.renderer.setBottomInset(inset);
+    }
+    // The credit link lives in the bottom-right corner — squarely under the
+    // touch pad. Hide it rather than let it eat taps mid-fight.
+    if (typeof document !== 'undefined' && typeof document.getElementById === 'function') {
+      const credit = document.getElementById('credit');
+      if (credit && credit.style) credit.style.display = this.touchMode ? 'none' : '';
+    }
+
     this.renderer.setSize(this.screenW, this.screenH);
     this.layout();
+  }
+
+  /** Flip touch controls on/off (dev-console testing hook). */
+  setTouchMode(on) {
+    this.touchMode = on;
+    this.resize();
+  }
+
+  /** Map a screen point on the fire-control pad to a sim-space aim point. */
+  aimFromPad(px, py) {
+    const r = this.padRect;
+    if (!r) return;
+    this.mouseX = clamp(((px - r.x) / r.w) * this.W, 0, this.W);
+    this.mouseY = clamp(((py - r.y) / r.h) * this.groundY, 0, this.groundY);
   }
 
   computeSlots() {
@@ -1531,6 +1581,9 @@ export class Game {
     this.drawHUD(ctx);
     ctx.restore();
 
+    // Touch: the fire-control pad sits below the field, outside the shake.
+    if (this.touchMode && this.state === 'playing') this.drawTouchPad(ctx);
+
     // The dev console replaces whatever overlay would be up underneath it.
     if (this.devMenuOpen) this.drawDevMenu(ctx);
     else this.drawOverlay(ctx);
@@ -1597,6 +1650,88 @@ export class Game {
     ctx.restore();
   }
 
+  /**
+   * Touch fire-control pad: a radar repeater of the whole field. Dragging on
+   * it lays the gun — absolute mapping, pad position = field position — so
+   * the player's thumb stays off the action. Blips mirror the tactical
+   * picture: cities, the gun, threats by type, friendly interceptors.
+   */
+  drawTouchPad(ctx) {
+    const r = this.padRect;
+    if (!r) return;
+    const sx = (x) => r.x + clamp(x / this.W, 0, 1) * r.w;
+    const sy = (y) => r.y + clamp(y / this.groundY, 0, 1) * r.h;
+    ctx.save();
+    ctx.fillStyle = 'rgba(10,18,32,0.92)';
+    this._roundRect(ctx, r.x, r.y, r.w, r.h, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(108,240,255,0.35)';
+    ctx.lineWidth = 1;
+    this._roundRect(ctx, r.x, r.y, r.w, r.h, 8);
+    ctx.stroke();
+    this.text(T.touch.padLabel, r.x + 10, r.y + 14, { size: 9, color: C.hudDim });
+
+    // Ground strip with city / gun markers.
+    ctx.strokeStyle = 'rgba(44,90,143,0.9)';
+    ctx.beginPath();
+    ctx.moveTo(r.x + 3, r.y + r.h - 4);
+    ctx.lineTo(r.x + r.w - 3, r.y + r.h - 4);
+    ctx.stroke();
+    for (const c of this.cities) {
+      ctx.fillStyle = c.alive ? C.city : C.cityDead;
+      ctx.fillRect(sx(c.x) - 4, r.y + r.h - 8, 8, 4);
+    }
+    for (const t of this.turrets) {
+      ctx.fillStyle = t.alive ? C.turretActive : C.cityDead;
+      ctx.fillRect(sx(t.x) - 2, r.y + r.h - 10, 5, 6);
+    }
+
+    // Threat blips, colored by type (cloaked stealth stays invisible here
+    // too); friendly interceptors as small cool dots.
+    const blipCol = {
+      normal: C.missile,
+      evasive: C.missileEvasive,
+      hypersonic: C.missileHypersonic,
+      cruise: C.missileCruise,
+      stealth: C.missileStealth,
+      drone: C.missileDrone,
+      bomber: C.missileBomber,
+      glidebomb: C.missileGlidebomb,
+      nuke: C.missileNuke,
+    };
+    for (const m of this.missiles) {
+      if (m.dead || m.stealthed) continue;
+      if (m.x < -40 || m.x > this.W + 40 || m.y < -40) continue;
+      const hot = m.type === 'nuke';
+      const s = hot ? 3.5 : 2;
+      ctx.fillStyle = blipCol[m.type] ?? C.missile;
+      ctx.fillRect(sx(m.x) - s / 2, sy(m.y) - s / 2, s, s);
+    }
+    ctx.fillStyle = C.interceptor;
+    for (const it of this.interceptorList) {
+      if (it.dead) continue;
+      ctx.fillRect(sx(it.x) - 1, sy(it.y) - 1, 2, 2);
+    }
+
+    // Aim marker: a small reticle at the mapped aim point.
+    const ax = sx(this.mouseX);
+    const ay = sy(this.mouseY);
+    ctx.strokeStyle = C.crosshair;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(ax, ay, 5, 0, TAU);
+    ctx.moveTo(ax - 9, ay);
+    ctx.lineTo(ax - 3, ay);
+    ctx.moveTo(ax + 3, ay);
+    ctx.lineTo(ax + 9, ay);
+    ctx.moveTo(ax, ay - 9);
+    ctx.lineTo(ax, ay - 3);
+    ctx.moveTo(ax, ay + 3);
+    ctx.lineTo(ax, ay + 9);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   drawAimLine(ctx) {
     const t = this.activeTurret;
     if (!t || !t.alive) return;
@@ -1611,7 +1746,8 @@ export class Game {
     ctx.setLineDash([4, 8]);
     ctx.beginPath();
     ctx.moveTo(s.x, s.y);
-    ctx.lineTo(this.pointerX, this.pointerY);
+    const aim = this.renderer.worldToScreen(this.mouseX, this.mouseY);
+    ctx.lineTo(aim.x, aim.y);
     ctx.stroke();
     ctx.restore();
   }
@@ -1623,8 +1759,16 @@ export class Game {
     const aiming = this.state === 'playing' && !this.paused;
     const empty = aiming && (!t || !t.alive);
     const col = empty ? C.crosshairEmpty : C.crosshair;
-    const x = this.pointerX;
-    const y = this.pointerY;
+    // In play the reticle marks the AIM POINT in the field (which, with the
+    // touch pad, is not under the finger); on menus it stands in for the
+    // hidden OS cursor, so it follows the pointer.
+    let x = this.pointerX;
+    let y = this.pointerY;
+    if (this.state === 'playing') {
+      const p = this.renderer.worldToScreen(this.mouseX, this.mouseY);
+      x = p.x;
+      y = p.y;
+    }
     ctx.save();
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.5;
@@ -1832,15 +1976,16 @@ export class Game {
     const cx = this.screenW / 2;
     if (this.state === 'menu') {
       this.dim(ctx, 0.55);
+      const compact = this.screenW < 700; // phones: tighter type, no overflow
       this.text(T.title, cx, this.screenH * 0.16, {
-        size: 54,
+        size: compact ? 36 : 54,
         align: 'center',
         weight: 'bold',
         color: C.turretActive,
         glow: true,
       });
-      this.text(T.subtitle, cx, this.screenH * 0.16 + 40, {
-        size: 18,
+      this.text(T.subtitle, cx, this.screenH * 0.16 + (compact ? 28 : 40), {
+        size: compact ? 13 : 18,
         align: 'center',
         color: C.hud,
       });
@@ -1851,30 +1996,43 @@ export class Game {
         weight: 'bold',
         color: C.hud,
       });
-      // Label + description rows, centred as a block.
+      // Label + description rows. The description is wrapped to the screen,
+      // so narrow (phone) windows reflow instead of running off the edge.
+      // On touch the AIM row teaches the fire-control pad instead of a mouse.
+      const rows = T.howToPlay.map((row, i) =>
+        i === 0 && this.touchMode ? T.touch.howToAim : row
+      );
+      const fs = compact ? 11.5 : 13;
+      const lh = compact ? 16 : 18;
+      const labelX = compact ? 110 : cx - 230;
+      const lineX = labelX + (compact ? 12 : 20);
+      const maxW = Math.min(this.screenW - lineX - 14, 480);
       let ry = this.screenH * 0.3 + 34;
-      for (const [label, ...lines] of T.howToPlay) {
-        this.text(label, cx - 230, ry, {
-          size: 13,
+      for (const [label, ...lines] of rows) {
+        this.text(label, labelX, ry, {
+          size: fs,
           align: 'right',
           weight: 'bold',
           color: C.turretActive,
         });
-        lines.forEach((l, i) =>
-          this.text(l, cx - 210, ry + i * 18, { size: 13, color: C.hud })
+        const wrapped = this._wrapText(ctx, lines.join(' '), maxW, fs);
+        wrapped.forEach((l, i) =>
+          this.text(l, lineX, ry + i * lh, { size: fs, color: C.hud })
         );
-        ry += lines.length * 18 + 14;
+        ry += wrapped.length * lh + 14;
       }
 
-      this.text(T.keysHint, cx, ry + 10, {
-        size: 14,
-        align: 'center',
-        color: C.hudDim,
-      });
+      if (!this.touchMode) {
+        this.text(T.keysHint, cx, ry + 10, {
+          size: 14,
+          align: 'center',
+          color: C.hudDim,
+        });
+      }
       if (this.savedRun) {
         this.drawMenuSaveButtons(ctx, cx);
       } else {
-        this.text(T.deploy, cx, this.screenH * 0.88, {
+        this.text(this.touchMode ? T.touch.deploy : T.deploy, cx, this.screenH * 0.88, {
           size: 20,
           align: 'center',
           weight: 'bold',
@@ -2066,7 +2224,7 @@ export class Game {
   /** Deterministic layout for the shop rows + the proceed button. */
   shopLayout() {
     const items = this.getShopItems();
-    const panelW = 480;
+    const panelW = Math.min(480, this.screenW - 16);
     const x = this.screenW / 2 - panelW / 2;
     const top = this.screenH * 0.3;
     const rowH = 46;
@@ -2193,7 +2351,9 @@ export class Game {
     let line = '';
     for (const word of str.split(/\s+/)) {
       const candidate = line ? `${line} ${word}` : word;
-      if (line && ctx.measureText(candidate).width > maxW) {
+      // Headless contexts may not implement measureText — then never wrap.
+      const w = ctx.measureText(candidate)?.width ?? 0;
+      if (line && w > maxW) {
         lines.push(line);
         line = word;
       } else {
@@ -2346,12 +2506,20 @@ export class Game {
         value: this.devLoadout ? D.on : D.off,
         action: () => (this.devLoadout = !this.devLoadout),
       },
+      {
+        hotkey: 't',
+        label: D.touchControls,
+        value: this.touchMode ? D.on : D.off,
+        action: () => this.setTouchMode(!this.touchMode),
+      },
     ];
     DEV_SCENARIOS.forEach((sc, i) => {
       items.push({
         hotkey: `${i + 1}`,
         label: D.scenarios[sc.key],
         active: this.devScenario === sc,
+        // The scenarios group gets its own heading in the layout.
+        headingBefore: i === 0 ? D.scenariosHeading : undefined,
         action: () => this.startSandbox(sc),
       });
     });
@@ -2376,8 +2544,8 @@ export class Game {
     const rowH = 36;
     const gap = 6;
     let y = this.screenH * 0.2;
-    const rows = items.map((item, i) => {
-      if (i === 2) y += 28; // room for the scenarios heading
+    const rows = items.map((item) => {
+      if (item.headingBefore) y += 28; // room for the group heading
       const r = { item, x, y, w: panelW, h: rowH };
       y += rowH + gap;
       return r;
@@ -2402,9 +2570,9 @@ export class Game {
     });
 
     const { rows } = this.devMenuLayout();
-    rows.forEach((r, i) => {
-      if (i === 2) {
-        this.text(T.dev.scenariosHeading, r.x, r.y - 10, { size: 12, color: C.hudDim });
+    rows.forEach((r) => {
+      if (r.item.headingBefore) {
+        this.text(r.item.headingBefore, r.x, r.y - 10, { size: 12, color: C.hudDim });
       }
       const hover = this._inRect(this.pointerX, this.pointerY, r);
       ctx.fillStyle = r.item.active ? 'rgba(255,216,107,0.25)' : hover ? C.shopRowHover : C.shopRow;
@@ -2440,6 +2608,17 @@ export class Game {
     const setPointer = (e) => {
       this.pointerX = e.clientX;
       this.pointerY = e.clientY;
+      // Touch: a drag on the fire-control pad aims via the pad mapping; a
+      // touch on the field itself still aims directly (both work).
+      if (
+        this.touchMode &&
+        this.padRect &&
+        this.state === 'playing' &&
+        this._inRect(e.clientX, e.clientY, this.padRect)
+      ) {
+        this.aimFromPad(e.clientX, e.clientY);
+        return;
+      }
       const w = this.renderer.screenToWorld(e.clientX, e.clientY);
       this.mouseX = w.x;
       this.mouseY = w.y;

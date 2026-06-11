@@ -383,6 +383,15 @@ export const CONFIG = {
     floatTextLife: 0.95, // seconds a floating "+credits" label lasts
     floatTextRise: 56, // px it drifts upward over its life
     tagHoverRadius: 120, // sim px — threat ID boxes show near the pointer only
+    // Touch devices get a radar-repeater pad docked BELOW the play field:
+    // you aim by dragging on the pad, so your thumb never covers the action.
+    // The field is letterboxed upward to make room (renderer bottom inset).
+    touchPad: {
+      heightFrac: 0.26, // pad height as a fraction of the screen
+      maxHeight: 230, // px cap on large phones / tablets
+      margin: 12, // px side margin
+      bottomMargin: 10, // px gap to the screen's bottom edge
+    },
   },
 
   // --- Visual / palette (CSS color strings; THREE.Color accepts these) ----

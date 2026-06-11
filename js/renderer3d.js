@@ -60,15 +60,54 @@ export class Renderer {
     // pull back far enough to contain both the vertical extent (coverFrac*gy)
     // and the full width (simW). Whichever needs more distance wins, so the
     // world looks identical regardless of how the window is shaped — only the
-    // surrounding sky/ground letterboxes. A small tilt adds depth.
+    // surrounding sky/ground letterboxes. A small tilt adds depth. With a
+    // bottom inset (the touch controller strip) the field is framed into the
+    // viewport area ABOVE the inset.
+    const effH = Math.max(1, this.clientH - this.bottomInset);
     const tan = Math.tan(THREE.MathUtils.degToRad(R.fov) / 2);
-    const aspect = this.clientW / this.clientH;
+    const aspect = this.clientW / effH;
     const distForHeight = (gy * R.coverFrac) / tan;
     const distForWidth = (this.simW * 0.5 * R.widthMargin) / (tan * aspect);
     const dist = Math.max(distForHeight, distForWidth);
-    const lookY = gy * 0.5;
+    let lookY = gy * 0.5;
+    if (this.bottomInset > 0) {
+      // Touch layout: pin the field's BOTTOM edge just above the controller
+      // strip instead of centering. Portrait screens are width-constrained,
+      // so centering would waste tall dead bands both above and below the
+      // field — pinning pushes all the slack into the sky, where threats
+      // enter anyway. (visibleWorldH is the world height the viewport spans.)
+      const visibleWorldH = 2 * dist * tan;
+      lookY = Math.max(lookY, visibleWorldH / 2 - gy * 0.03);
+    }
     this.camera.position.set(0, lookY + gy * R.tiltFrac, dist);
     this.camera.lookAt(0, lookY, 0);
+    this.camera.updateProjectionMatrix();
+  }
+
+  /**
+   * Reserve a strip at the bottom of the canvas (the touch controller). The
+   * scene is framed as if the viewport ended above the strip — implemented
+   * with a camera view offset, so worldToScreen/screenToWorld (which read the
+   * projection matrix) stay consistent for free.
+   */
+  setBottomInset(px) {
+    if (this.bottomInset === px) return;
+    this.bottomInset = px;
+    this._applyViewOffset();
+  }
+
+  _applyViewOffset() {
+    const inset = this.bottomInset || 0;
+    const effH = Math.max(1, this.clientH - inset);
+    this.camera.aspect = this.clientW / effH;
+    if (inset > 0) {
+      // Notional full image = the framed field at clientW x effH; rendering
+      // the (taller) sub-rect 0,0,clientW,clientH puts that image in the top
+      // of the canvas and lets the world continue beneath it.
+      this.camera.setViewOffset(this.clientW, effH, 0, 0, this.clientW, this.clientH);
+    } else {
+      this.camera.clearViewOffset();
+    }
     this.camera.updateProjectionMatrix();
   }
 
@@ -1479,8 +1518,7 @@ export class Renderer {
     this.three.setSize(w, h, true);
     this.composer.setSize(w, h);
     if (this.bloom) this.bloom.setSize(w, h);
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
+    this._applyViewOffset(); // sets aspect (inset-aware) + projection
   }
 
   _updateCamera(game) {

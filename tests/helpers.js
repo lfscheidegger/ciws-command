@@ -26,6 +26,9 @@ export function makeFakeCanvas() {
 export function makeStubRenderer() {
   return {
     setSize() {},
+    setBottomInset(px) {
+      this.bottomInset = px; // recorded so tests can assert on the layout
+    },
     syncStructures() {},
     render() {},
     screenToWorld(x, y) {
